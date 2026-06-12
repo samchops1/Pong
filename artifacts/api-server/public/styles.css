@@ -139,6 +139,31 @@ input[type="number"] { max-width: 200px; }
 .tolerance-sliders label { font-size: 0.85rem; display: flex; align-items: center; gap: 8px; }
 .tolerance-sliders input[type="range"] { flex: 1; accent-color: var(--team-a); }
 
+/* ── Ball calibration split view ── */
+.ball-cal-split {
+  flex: 1; display: flex; flex-direction: row; min-height: 0; overflow: hidden;
+}
+.ball-cal-panel {
+  flex: 1; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border);
+}
+.ball-cal-panel:last-child { border-right: none; }
+.ball-cal-label {
+  padding: 6px 12px; font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text2); background: var(--bg2);
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.ball-canvas-wrapper { flex: 1; min-height: 0; }
+.ball-canvas-wrapper canvas { max-height: calc(100vh - 280px); }
+.mask-hint { font-size: 0.72rem; color: var(--text2); font-weight: 400; text-transform: none;
+  letter-spacing: 0; margin-left: 4px; }
+
+@media (max-width: 600px) {
+  .ball-cal-split { flex-direction: column; }
+  .ball-cal-panel { border-right: none; border-bottom: 1px solid var(--border); }
+  .ball-cal-panel:last-child { border-bottom: none; }
+  .ball-canvas-wrapper canvas { max-height: 35vh; }
+}
+
 /* ── GAME ── */
 .game-header {
   display: flex; align-items: center; justify-content: space-between;

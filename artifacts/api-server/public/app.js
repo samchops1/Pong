@@ -280,23 +280,34 @@ async function startBallCal() {
   document.getElementById('btn-start-game').disabled = true;
   document.getElementById('hsv-info').textContent = '';
   document.getElementById('ball-sample-dot').classList.add('hidden');
+  document.getElementById('mask-hint').classList.remove('hidden');
 
   const video = document.getElementById('ball-video');
   const canvas = document.getElementById('ball-canvas');
+  const maskCanvas = document.getElementById('ball-mask-canvas');
   Vision.init(video, canvas);
   const ok = await Vision.startCamera('environment');
   if (!ok) { alert('Camera error'); return; }
   canvas.width = video.videoWidth || 640;
   canvas.height = video.videoHeight || 480;
+  maskCanvas.width = canvas.width;
+  maskCanvas.height = canvas.height;
 
   ballPreviewActive = true;
   const ctx = canvas.getContext('2d');
+  const maskCtx = maskCanvas.getContext('2d');
+
   (function loop() {
     if (!ballPreviewActive) return;
     if (video.videoWidth) {
       canvas.width = video.videoWidth; canvas.height = video.videoHeight;
       ctx.drawImage(video, 0, 0);
-      if (pendingMask && Vision.ballHSV) applyMaskOverlay(ctx, canvas);
+
+      if (ballSampled && Vision.ballHSV) {
+        maskCanvas.width = canvas.width; maskCanvas.height = canvas.height;
+        maskCtx.drawImage(video, 0, 0, maskCanvas.width, maskCanvas.height);
+        applyMaskOverlay(maskCtx, maskCanvas);
+      }
     }
     requestAnimationFrame(loop);
   })();
@@ -312,7 +323,9 @@ async function startBallCal() {
     Vision.ballHSV = null;
     document.getElementById('ball-sample-dot').classList.add('hidden');
     document.getElementById('hsv-info').textContent = '';
+    document.getElementById('mask-hint').classList.remove('hidden');
     document.getElementById('btn-start-game').disabled = true;
+    maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
   };
 
   document.getElementById('btn-start-game').onclick = () => {
@@ -374,6 +387,8 @@ function onBallClick(e) {
   dot.style.left = e.clientX + 'px';
   dot.style.top = e.clientY + 'px';
   dot.classList.remove('hidden');
+  document.getElementById('mask-hint').classList.add('hidden');
+  document.getElementById('hsv-details').open = true;
   document.getElementById('btn-start-game').disabled = false;
 }
 

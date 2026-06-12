@@ -85,18 +85,29 @@
 <div id="screen-calibrate-ball" class="screen">
   <div class="calibrate-header">
     <h2>Step 2: Sample Ball Color</h2>
-    <p>Hold the ping-pong ball up to the camera and click on it</p>
+    <p>Click on the ball in the left view to sample its color — the right panel shows matched pixels in green</p>
   </div>
-  <div class="canvas-wrapper">
-    <canvas id="ball-canvas"></canvas>
-    <video id="ball-video" playsinline autoplay muted style="display:none"></video>
-    <div id="ball-sample-dot" class="sample-dot hidden"></div>
+  <div class="ball-cal-split">
+    <div class="ball-cal-panel">
+      <div class="ball-cal-label">Camera</div>
+      <div class="canvas-wrapper ball-canvas-wrapper">
+        <canvas id="ball-canvas"></canvas>
+        <video id="ball-video" playsinline autoplay muted style="display:none"></video>
+        <div id="ball-sample-dot" class="sample-dot hidden"></div>
+      </div>
+    </div>
+    <div class="ball-cal-panel">
+      <div class="ball-cal-label">Color Mask <span id="mask-hint" class="mask-hint">← click ball to activate</span></div>
+      <div class="canvas-wrapper ball-canvas-wrapper">
+        <canvas id="ball-mask-canvas"></canvas>
+      </div>
+    </div>
   </div>
   <div class="calibrate-footer">
     <div class="hsv-info" id="hsv-info"></div>
     <button id="btn-resample" class="btn-secondary">Re-sample</button>
-    <details class="advanced-details">
-      <summary>Advanced HSV Tolerances</summary>
+    <details class="advanced-details" id="hsv-details">
+      <summary>HSV Tolerances</summary>
       <div class="tolerance-sliders">
         <label>Hue ±<span id="hue-val">18</span>
           <input type="range" id="hue-tol" min="5" max="60" value="18">

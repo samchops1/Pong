@@ -121,11 +121,12 @@ function findLargestBlob(mask, w, h) {
   for (let i = 0; i < w * h; i++) {
     if (!mask[i] || vis[i]) continue;
     const queue = [i]; vis[i] = 1;
-    let head = 0, sx = 0, sy = 0, cnt = 0;
+    let head = 0, sx = 0, sy = 0, cnt = 0, touchesEdge = false;
     while (head < queue.length && cnt < BALL_MAX_PX * 2) {
       const idx = queue[head++];
       const bx = idx % w, by = (idx / w) | 0;
       sx += bx; sy += by; cnt++;
+      if (bx === 0 || bx === w-1 || by === 0 || by === h-1) touchesEdge = true;
       for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
         const nx = bx+dx, ny = by+dy;
         if (nx<0||ny<0||nx>=w||ny>=h) continue;
@@ -133,6 +134,7 @@ function findLargestBlob(mask, w, h) {
         if (mask[ni] && !vis[ni]) { vis[ni]=1; queue.push(ni); }
       }
     }
+    if (touchesEdge) continue;
     if (cnt >= BALL_MIN_PX && cnt <= BALL_MAX_PX && (!best || cnt > best.cnt)) {
       best = { cx: sx/cnt, cy: sy/cnt, cnt };
     }
