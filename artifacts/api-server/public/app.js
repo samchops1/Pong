@@ -550,7 +550,19 @@ function autoScoreCup(teamKey, cupId) {
     state.turnFirstCupId = cupId;
   }
 
-  const teamLetter = teamKey === 'teamA' ? 'A' : 'B';
+  // Rule: fire resets for the defending team when they are scored on
+  const defenderTeamLetter = teamKey === 'teamA' ? 'A' : 'B';
+  const defPlayers = state.players[defenderTeamLetter] || [];
+  for (const dp of defPlayers) {
+    if ((state.fireStreak[dp]||0) > 0) {
+      state.fireStreak[dp] = 0;
+    }
+  }
+  if (state.onFire[defenderTeamLetter]) {
+    state.onFire[defenderTeamLetter] = null;
+  }
+
+  const teamLetter = defenderTeamLetter;
   const remaining = (state.cups[teamKey]||[]).filter(c=>!c.made).length;
 
   const undoFn = () => {
@@ -677,8 +689,18 @@ function endRebuttal() {
   if (overlay) overlay.classList.add('hidden');
 
   if (made > 0) {
-    // Rebuttal succeeded — game continues, attacker's turn
-    addEvent(`💥 Rebuttal! ${teamDisplayName(defender)} stays alive!`, 'rebuttal');
+    // Restore cups to the defender's rack (1 cup per rebuttal make)
+    const defKey = defender==='A'?'teamA':'teamB';
+    const defCups = state.cups[defKey]||[];
+    let restored = 0;
+    for (let i = defCups.length-1; i >= 0 && restored < made; i--) {
+      if (defCups[i].made) {
+        defCups[i].made = false;
+        defCups[i].madeBy = null;
+        restored++;
+      }
+    }
+    addEvent(`💥 Rebuttal! ${teamDisplayName(defender)} stays alive — ${restored} cup${restored!==1?'s':''} back!`, 'rebuttal');
     Commentary.fire('rebuttal_success', { team: teamDisplayName(defender) });
     state.shootingTeam = attacker;
     state.shooterIndex[attacker] = 0;
@@ -817,13 +839,24 @@ function showBehindBackButton(missingPlayer, defendingKey) {
 }
 
 function scoreBehindBack(player, defendingKey) {
-  const remaining = (state.cups[defendingKey]||[]).filter(c=>!c.made);
-  const n = Math.min(2, remaining.length);
-  if (n === 0) return;
+  const allCups = state.cups[defendingKey]||[];
+  const remaining = allCups.filter(c=>!c.made);
+  if (remaining.length === 0) return;
+  // Pick the 2 cups nearest to the centroid of the remaining rack (most accessible)
+  const positions = allCups.length===10 ? CUP_POSITIONS_10 : CUP_POSITIONS_6;
+  const posMap = Object.fromEntries(positions.map(p=>[p.id, p]));
+  const cx = remaining.reduce((s,c)=>(posMap[c.id]?.cx||0)+s,0)/remaining.length;
+  const cy = remaining.reduce((s,c)=>(posMap[c.id]?.cy||0)+s,0)/remaining.length;
+  const sorted = remaining.slice().sort((a,b)=>{
+    const pa = posMap[a.id]||{cx:0,cy:0}, pb = posMap[b.id]||{cx:0,cy:0};
+    return Math.hypot(pa.cx-cx,pa.cy-cy) - Math.hypot(pb.cx-cx,pb.cy-cy);
+  });
+  const picks = sorted.slice(0, Math.min(2, sorted.length));
+  const n = picks.length;
   ensureStats(player);
   for (let i=0; i<n; i++) {
-    remaining[i].made = true;
-    remaining[i].madeBy = player;
+    picks[i].made = true;
+    picks[i].madeBy = player;
     state.playerStats[player].made++;
   }
   const teamLetter = defendingKey==='teamA'?'A':'B';
