@@ -30,12 +30,23 @@ router.post("/commentary", async (req, res) => {
       }),
     });
 
+    if (!response.ok) {
+      const errBody = await response.text();
+      console.error(`[commentary] Anthropic API error ${response.status}: ${errBody}`);
+      res.json({ text: null });
+      return;
+    }
+
     const data = (await response.json()) as {
       content?: Array<{ text: string }>;
     };
     const text = data.content?.[0]?.text ?? null;
+    if (!text) {
+      console.error("[commentary] Anthropic returned no text content", data);
+    }
     res.json({ text });
-  } catch (_err) {
+  } catch (err) {
+    console.error("[commentary] Unexpected error calling Anthropic:", err);
     res.json({ text: null });
   }
 });
