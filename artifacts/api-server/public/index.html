@@ -195,6 +195,25 @@
     <button id="btn-confirm-penalty" class="btn-danger">Confirm Penalty</button>
     <button id="btn-dismiss-foul" class="btn-secondary">Dismiss</button>
   </div>
+
+  <!-- Rebuttal overlay -->
+  <div id="rebuttal-overlay" class="rebuttal-overlay hidden">
+    <div class="rebuttal-content">
+      <div class="rebuttal-headline">⚡ REBUTTAL!</div>
+      <div id="rebuttal-shooter" class="rebuttal-shooter"></div>
+      <div id="rebuttal-shots-left" class="rebuttal-shots"></div>
+      <button id="btn-rebuttal-miss" class="btn-secondary btn-huge">Miss ✗ (Skip Shot)</button>
+    </div>
+  </div>
+</div>
+
+<!-- Behind the Back button (fixed, appears briefly after a miss) -->
+<button id="btb-btn" class="btb-btn hidden">🤙 Behind the Back! (+2 cups)</button>
+
+<!-- Island reminder banner (fixed, appears at turn end when lone cup detected) -->
+<div id="island-banner" class="island-banner hidden">
+  <span id="island-text">🏝 Lone cup — move to center!</span>
+  <button id="btn-dismiss-island" class="btn-sm btn-secondary">OK</button>
 </div>
 
 <!-- WIN SCREEN -->

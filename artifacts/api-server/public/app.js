@@ -24,7 +24,7 @@ let ballPreviewActive = false;
 let ballSampled = false;
 let pendingMask = false;
 let confettiRaf = null;
-const SAVE_KEY = 'pongref_v3';
+const SAVE_KEY = 'pongref_v4';
 const HISTORY_KEY = 'pongref_history_v1';
 
 function freshState(cfg) {
@@ -45,12 +45,20 @@ function freshState(cfg) {
     eventLog: [],
     consecutiveMisses: {A:0, B:0},
     makesThisTurn: 0,
+    turnMakesPerPlayer: {},  // {playerName: count} cups made this real turn
+    turnFirstCupId: null,    // cup ID made by first 2v2 shooter (same-cup detection)
+    fireStreak: {},          // {playerName: consecutive real-turn makes}
+    onFire: {A:null, B:null},// per-team: player name currently on fire
     ballsBack: cfg.ballsBack,
     strictFoul: cfg.strictFoul,
     penalties: {A:0, B:0},
     fastest: {A:0, B:0},
     startTime: Date.now(),
-    muted: false
+    muted: false,
+    isRebuttal: false,
+    rebuttalTeam: null,
+    rebuttalShotsLeft: 0,
+    rebuttalMakes: 0
   };
 }
 
@@ -116,13 +124,11 @@ function initSetupScreen() {
     document.getElementById('resume-modal').classList.remove('hidden');
     document.getElementById('btn-resume-yes').onclick = () => {
       state = saved.gameState;
-      // Restore CV calibration so tracking works without re-calibrating
       const cv = saved.cvState;
       if (cv) {
         if (cv.calCorners && cv.calCorners.length === 4) calCorners = cv.calCorners;
         if (cv.ballHSV) Vision.ballHSV = cv.ballHSV;
         if (cv.hsvTol) Vision.setHsvTol(cv.hsvTol);
-        // Ensure window._cfg is available for any remaining references
         window._cfg = window._cfg || {
           tableFt: state.tableFt, cupCount: state.cupCount,
           mode: state.mode, ballsBack: state.ballsBack, strictFoul: state.strictFoul,
@@ -219,7 +225,6 @@ function drawCornerDots(ctx) {
     ctx.beginPath(); ctx.moveTo(c0.x,c0.y); ctx.lineTo(c1.x,c1.y);
     ctx.lineTo(c3.x,c3.y); ctx.lineTo(c2.x,c2.y); ctx.closePath(); ctx.stroke();
     ctx.setLineDash([]);
-    // Foul line
     ctx.strokeStyle = 'rgba(255,60,60,0.8)'; ctx.lineWidth = 2; ctx.setLineDash([10,5]);
     ctx.beginPath(); ctx.moveTo(c0.x,c0.y); ctx.lineTo(c1.x,c1.y); ctx.stroke();
     ctx.setLineDash([]);
@@ -433,10 +438,10 @@ function generateDefaultCorners(canvas) {
   const w = canvas.width, h = canvas.height;
   const mg = 0.15;
   return [
-    {x: w*mg,     y: h*(1-mg)},  // near-left
-    {x: w*(1-mg), y: h*(1-mg)},  // near-right
-    {x: w*mg,     y: h*mg},      // far-left
-    {x: w*(1-mg), y: h*mg}       // far-right
+    {x: w*mg,     y: h*(1-mg)},
+    {x: w*(1-mg), y: h*(1-mg)},
+    {x: w*mg,     y: h*mg},
+    {x: w*(1-mg), y: h*mg}
   ];
 }
 
@@ -457,9 +462,14 @@ function wireGameButtons() {
   document.getElementById('btn-toggle-no').onclick = () =>
     document.getElementById('toggle-modal').classList.add('hidden');
 
-  document.getElementById('btn-pass-turn') && (
-    document.getElementById('btn-pass-turn').onclick = () => advanceTurn('manual')
-  );
+  const passBtn = document.getElementById('btn-pass-turn');
+  if (passBtn) passBtn.onclick = () => afterShotHappened(false);
+
+  const dismissIsland = document.getElementById('btn-dismiss-island');
+  if (dismissIsland) dismissIsland.onclick = () => {
+    const b = document.getElementById('island-banner');
+    if (b) b.classList.add('hidden');
+  };
 }
 
 /* ── Vision Callbacks ── */
@@ -491,10 +501,18 @@ function onSpeed(mph) {
 
 function onMakeDetected(detection) {
   const { cup, confidence, team } = detection;
-  const teamKey = team; // 'teamA' or 'teamB'
+  const teamKey = team;
   const cupObj = (state.cups[teamKey]||[]).find(c=>c.id===cup.id);
+
+  // Same-cup bonus in 2v2: second shooter sinks the same cup first shooter made
+  if (cupObj && cupObj.made && state.mode === '2v2' &&
+      state.shooterIndex[state.shootingTeam] === 1 &&
+      state.turnFirstCupId === cup.id) {
+    triggerSameCupBonus(teamKey);
+    return;
+  }
+
   if (!cupObj || cupObj.made) return;
-  const teamLetter = teamKey === 'teamA' ? 'A' : 'B';
 
   if (confidence === 'high') {
     autoScoreCup(teamKey, cup.id);
@@ -510,7 +528,7 @@ function onFoulDetected({ player }) {
   saveState();
 }
 
-/* ── Scoring ── */
+/* ─────────────────────────── SCORING ─────────────────────────── */
 function autoScoreCup(teamKey, cupId) {
   const cup = (state.cups[teamKey]||[]).find(c=>c.id===cupId);
   if (!cup || cup.made) return;
@@ -523,6 +541,15 @@ function autoScoreCup(teamKey, cupId) {
   state.makesThisTurn++;
   state.consecutiveMisses[state.shootingTeam] = 0;
 
+  // Track per-player makes for fire-streak calculation at turn boundary
+  state.turnMakesPerPlayer = state.turnMakesPerPlayer || {};
+  state.turnMakesPerPlayer[shooter] = (state.turnMakesPerPlayer[shooter] || 0) + 1;
+
+  // Remember first cup ID for same-cup detection in 2v2
+  if (state.mode === '2v2' && state.shooterIndex[state.shootingTeam] === 0 && !state.turnFirstCupId) {
+    state.turnFirstCupId = cupId;
+  }
+
   const teamLetter = teamKey === 'teamA' ? 'A' : 'B';
   const remaining = (state.cups[teamKey]||[]).filter(c=>!c.made).length;
 
@@ -530,6 +557,8 @@ function autoScoreCup(teamKey, cupId) {
     cup.made = false; cup.madeBy = null;
     if (state.playerStats[shooter]) state.playerStats[shooter].made = Math.max(0, state.playerStats[shooter].made-1);
     state.makesThisTurn = Math.max(0, state.makesThisTurn-1);
+    state.turnMakesPerPlayer = state.turnMakesPerPlayer || {};
+    state.turnMakesPerPlayer[shooter] = Math.max(0, (state.turnMakesPerPlayer[shooter]||1)-1);
     updateCupCount(); renderRacks(); updateTeamPanels(); saveState();
   };
 
@@ -544,46 +573,302 @@ function autoScoreCup(teamKey, cupId) {
   });
 
   saveState();
-  checkWinCondition(teamKey);
+
+  // Check win condition (triggers rebuttal if needed); if not game-over, auto-advance shot
+  const gameOver = checkWinCondition(teamKey);
+  if (!gameOver) afterShotHappened(true);
 }
 
+/* ── Same-cup bonus ── */
+function triggerSameCupBonus(teamKey) {
+  const shooter = shooterName();
+  ensureStats(shooter);
+
+  // Remove 2 extra cups from the rack
+  const remaining = (state.cups[teamKey]||[]).filter(c=>!c.made);
+  const n = Math.min(2, remaining.length);
+  for (let i=0; i<n; i++) {
+    remaining[i].made = true;
+    remaining[i].madeBy = shooter;
+    state.playerStats[shooter].made++;
+  }
+  state.makesThisTurn += n;
+  state.turnMakesPerPlayer = state.turnMakesPerPlayer || {};
+  state.turnMakesPerPlayer[shooter] = (state.turnMakesPerPlayer[shooter] || 0) + n;
+
+  const teamLetter = teamKey==='teamA'?'A':'B';
+  addEvent(`🎯🎯 SAME CUP! ${shooter} sinks partner's cup — 3 total removed from Team ${teamLetter}!`, 'same-cup');
+  Commentary.fire('same_cup', { player: shooter, team:`Team ${teamLetter}` });
+  updateCupCount(); renderRacks(); updateTeamPanels(); saveState();
+
+  const gameOver = checkWinCondition(teamKey);
+  if (!gameOver) afterShotHappened(true);
+}
+
+/* ── Win / Rebuttal ── */
 function checkWinCondition(teamKey) {
   const remaining = (state.cups[teamKey]||[]).filter(c=>!c.made).length;
   if (remaining === 0) {
-    const winner = state.shootingTeam;
-    const loser = winner==='A'?'B':'A';
+    const attacker = state.shootingTeam;
+    const defender = attacker==='A'?'B':'A';
+    startRebuttal(attacker, defender, teamKey);
+    return true;
+  }
+  return false;
+}
+
+function startRebuttal(attacker, defender, teamKey) {
+  state.isRebuttal = true;
+  state.rebuttalTeam = defender;
+  state.rebuttalShotsLeft = state.mode==='2v2' ? 2 : 1;
+  state.rebuttalMakes = 0;
+
+  // Defender now shoots
+  state.shootingTeam = defender;
+  state.shooterIndex[defender] = 0;
+
+  const shots = state.rebuttalShotsLeft;
+  const overlay = document.getElementById('rebuttal-overlay');
+  if (overlay) {
+    overlay.classList.remove('hidden');
+    const shooterEl = document.getElementById('rebuttal-shooter');
+    if (shooterEl) shooterEl.textContent = `${state.players[defender][0]} — shoot now!`;
+    const shotsEl = document.getElementById('rebuttal-shots-left');
+    if (shotsEl) shotsEl.textContent = `${shots} shot${shots!==1?'s':''} left`;
+    const missBtn = document.getElementById('btn-rebuttal-miss');
+    if (missBtn) missBtn.onclick = () => afterShotHappened(false);
+  }
+
+  addEvent(`⚡ REBUTTAL! ${teamDisplayName(defender)} gets ${shots} shot${shots!==1?'s':''}!`, 'rebuttal');
+  Commentary.fire('rebuttal', { team: teamDisplayName(defender), player: state.players[defender][0] });
+  updateTurnIndicator(); updateTeamPanels(); saveState();
+}
+
+function handleRebuttalShot(wasMake) {
+  if (wasMake) state.rebuttalMakes++;
+  state.rebuttalShotsLeft--;
+
+  const defender = state.rebuttalTeam;
+
+  if (state.rebuttalShotsLeft > 0 && state.mode==='2v2') {
+    state.shooterIndex[defender] = 1;
+    const shooterEl = document.getElementById('rebuttal-shooter');
+    if (shooterEl) shooterEl.textContent = `${state.players[defender][1]||'P2'} — shoot now!`;
+    const shotsEl = document.getElementById('rebuttal-shots-left');
+    if (shotsEl) shotsEl.textContent = `1 shot left`;
+    updateTurnIndicator(); saveState();
+    return;
+  }
+
+  endRebuttal();
+}
+
+function endRebuttal() {
+  const defender = state.rebuttalTeam;
+  const attacker = defender==='A'?'B':'A';
+  const made = state.rebuttalMakes;
+
+  state.isRebuttal = false;
+  state.rebuttalTeam = null;
+  state.rebuttalShotsLeft = 0;
+  state.rebuttalMakes = 0;
+
+  const overlay = document.getElementById('rebuttal-overlay');
+  if (overlay) overlay.classList.add('hidden');
+
+  if (made > 0) {
+    // Rebuttal succeeded — game continues, attacker's turn
+    addEvent(`💥 Rebuttal! ${teamDisplayName(defender)} stays alive!`, 'rebuttal');
+    Commentary.fire('rebuttal_success', { team: teamDisplayName(defender) });
+    state.shootingTeam = attacker;
+    state.shooterIndex[attacker] = 0;
+    state.makesThisTurn = 0;
+    state.turnMakesPerPlayer = {};
+    state.turnFirstCupId = null;
+    addEvent(`➡️ Turn: Team ${attacker}`, 'turn');
+    updateTurnIndicator(); updateTeamPanels(); renderRacks(); saveState();
+  } else {
+    // Rebuttal failed — attacker wins
     Vision.stopTracking(); Vision.stopCamera();
     clearSaved();
-    setTimeout(() => showWinScreen(winner, loser), 600);
+    setTimeout(() => showWinScreen(attacker, defender), 600);
   }
 }
 
+/* ── Central shot handler ── */
+function afterShotHappened(wasMake) {
+  if (!state) return;
+
+  // Route rebuttal shots separately
+  if (state.isRebuttal) { handleRebuttalShot(wasMake); return; }
+
+  const t = state.shootingTeam;
+  const shooter = shooterName();
+
+  if (!wasMake) {
+    // Miss: reset fire streak for this player, end fire if active
+    state.fireStreak = state.fireStreak || {};
+    state.fireStreak[shooter] = 0;
+    if (state.onFire[t] === shooter) {
+      addEvent(`💨 ${shooter}'s fire is out!`, 'fire-end');
+      Commentary.fire('fire_end', { player: shooter });
+      state.onFire[t] = null;
+    }
+    // Show behind-the-back button (appears briefly after a miss)
+    const defendingKey = t==='A' ? 'teamB' : 'teamA';
+    showBehindBackButton(shooter, defendingKey);
+  }
+
+  // Fire player keeps shooting on makes
+  if (wasMake && state.onFire[t] === shooter) {
+    updateTurnIndicator(); updateTeamPanels(); saveState();
+    return;
+  }
+
+  // 2v2: advance first shooter to second before full turn flip
+  if (state.mode==='2v2' && state.shooterIndex[t]===0) {
+    state.shooterIndex[t] = 1;
+    // Check fire for second shooter at their sub-turn start
+    const secondShooter = state.players[t][1];
+    if (secondShooter && (state.fireStreak[secondShooter]||0) >= 3 && !state.onFire[t]) {
+      state.onFire[t] = secondShooter;
+      addEvent(`🔥 ${secondShooter} is ON FIRE! Shoot until you miss!`, 'fire');
+      Commentary.fire('fire', { player: secondShooter });
+    }
+    updateTurnIndicator(); updateTeamPanels(); saveState();
+    return;
+  }
+
+  // Full team turn flip
+  advanceTurn('auto');
+}
+
+/* ── Turn advancement ── */
 function advanceTurn(source) {
   const gs = state;
-  // Balls back: 2+ makes in one turn
-  if (gs.ballsBack && gs.makesThisTurn >= 2) {
+  const outgoingT = gs.shootingTeam;
+
+  // Balls-back check
+  if (gs.ballsBack && gs.makesThisTurn >= 2 && !gs.isRebuttal) {
     gs.makesThisTurn = 0;
-    addEvent(`🔄 Balls back — Team ${gs.shootingTeam} shoots again!`, 'balls-back');
-    Commentary.fire('balls_back', { team:`Team ${gs.shootingTeam}`, player:shooterName() });
-    updateTurnIndicator(); saveState(); return;
+    gs.turnMakesPerPlayer = {};
+    gs.turnFirstCupId = null;
+    gs.shooterIndex[outgoingT] = 0;
+    gs.onFire[outgoingT] = null;
+    addEvent(`🔄 Balls back — Team ${outgoingT} shoots again!`, 'balls-back');
+    Commentary.fire('balls_back', { team:`Team ${outgoingT}`, player:shooterName() });
+    updateTurnIndicator(); updateTeamPanels(); saveState(); return;
   }
 
+  // Miss streak commentary
+  gs.consecutiveMisses[outgoingT]++;
+  if (gs.consecutiveMisses[outgoingT] >= 3) {
+    Commentary.fire('miss_streak', { player:shooterName(), defending:`Team ${outgoingT==='A'?'B':'A'}`, missStreak:true });
+  }
+
+  // Update fire streaks at real turn boundary (once per real turn per player)
+  gs.fireStreak = gs.fireStreak || {};
+  const outgoingPlayers = gs.mode==='2v2'
+    ? [gs.players[outgoingT][0], gs.players[outgoingT][1]].filter(Boolean)
+    : [gs.players[outgoingT][0]].filter(Boolean);
+  for (const p of outgoingPlayers) {
+    const madeAny = (gs.turnMakesPerPlayer[p]||0) > 0;
+    gs.fireStreak[p] = madeAny ? (gs.fireStreak[p]||0)+1 : 0;
+  }
+
+  // End fire for outgoing team
+  gs.onFire[outgoingT] = null;
+
+  // Flip team
   gs.makesThisTurn = 0;
-  gs.consecutiveMisses[gs.shootingTeam]++;
+  gs.turnMakesPerPlayer = {};
+  gs.turnFirstCupId = null;
+  gs.shooterIndex[outgoingT] = 0;
+  gs.shootingTeam = outgoingT==='A'?'B':'A';
+  gs.shooterIndex[gs.shootingTeam] = 0;
 
-  if (gs.consecutiveMisses[gs.shootingTeam] >= 3) {
-    const s = shooterName();
-    Commentary.fire('miss_streak', { player:s, defending:`Team ${gs.shootingTeam==='A'?'B':'A'}`, missStreak:true });
+  // Check fire for incoming first shooter (activates at real turn start)
+  const incomingFirst = gs.players[gs.shootingTeam][0];
+  if (incomingFirst && (gs.fireStreak[incomingFirst]||0) >= 3) {
+    gs.onFire[gs.shootingTeam] = incomingFirst;
+    addEvent(`🔥 ${incomingFirst} is ON FIRE! Shoot until you miss!`, 'fire');
+    Commentary.fire('fire', { player: incomingFirst });
   }
 
-  if (gs.mode === '2v2') {
-    gs.shooterIndex[gs.shootingTeam] = (gs.shooterIndex[gs.shootingTeam]+1)%2;
-  }
-  gs.shootingTeam = gs.shootingTeam==='A'?'B':'A';
+  // Island reminder
+  checkIslandReminder();
 
   addEvent(`➡️ Turn: Team ${gs.shootingTeam}`, 'turn');
   updateTurnIndicator();
   updateTeamPanels(); saveState();
+}
+
+/* ── Behind the Back ── */
+function showBehindBackButton(missingPlayer, defendingKey) {
+  const btn = document.getElementById('btb-btn');
+  if (!btn) return;
+  btn.classList.remove('hidden');
+  clearTimeout(btn._t);
+  btn.onclick = () => {
+    btn.classList.add('hidden');
+    scoreBehindBack(missingPlayer, defendingKey);
+  };
+  btn._t = setTimeout(() => btn.classList.add('hidden'), 5000);
+}
+
+function scoreBehindBack(player, defendingKey) {
+  const remaining = (state.cups[defendingKey]||[]).filter(c=>!c.made);
+  const n = Math.min(2, remaining.length);
+  if (n === 0) return;
+  ensureStats(player);
+  for (let i=0; i<n; i++) {
+    remaining[i].made = true;
+    remaining[i].madeBy = player;
+    state.playerStats[player].made++;
+  }
+  const teamLetter = defendingKey==='teamA'?'A':'B';
+  addEvent(`🤙 BEHIND THE BACK! ${player} banks 2 cups from Team ${teamLetter}!`, 'btb');
+  Commentary.fire('btb', { player, team:`Team ${teamLetter}` });
+  updateCupCount(); renderRacks(); updateTeamPanels(); saveState();
+  checkWinCondition(defendingKey);
+}
+
+/* ── Island reminder ── */
+function hasLoneCup(teamKey) {
+  const cups = state.cups[teamKey]||[];
+  const remaining = cups.filter(c=>!c.made);
+  if (remaining.length === 0) return false;
+  if (remaining.length === 1) return true;
+  const positions = cups.length===10 ? CUP_POSITIONS_10 : CUP_POSITIONS_6;
+  const THRESH = 48;
+  for (const cup of remaining) {
+    const pos = positions.find(p=>p.id===cup.id);
+    if (!pos) continue;
+    const hasNeighbor = remaining.some(other => {
+      if (other.id===cup.id) return false;
+      const oPos = positions.find(p=>p.id===other.id);
+      if (!oPos) return false;
+      return Math.hypot(pos.cx-oPos.cx, pos.cy-oPos.cy) < THRESH;
+    });
+    if (!hasNeighbor) return true;
+  }
+  return false;
+}
+
+function checkIslandReminder() {
+  const aHas = hasLoneCup('teamA');
+  const bHas = hasLoneCup('teamB');
+  if (!aHas && !bHas) return;
+  const banner = document.getElementById('island-banner');
+  if (!banner) return;
+  let msg = '🏝 Lone cup — move to center! ';
+  if (aHas && bHas) msg = '🏝 Lone cups on both sides — move to center!';
+  else if (aHas) msg = '🏝 Team A has a lone cup — move it to center!';
+  else msg = '🏝 Team B has a lone cup — move it to center!';
+  banner.querySelector('#island-text').textContent = msg;
+  banner.classList.remove('hidden');
+  clearTimeout(banner._t);
+  banner._t = setTimeout(() => banner.classList.add('hidden'), 8000);
 }
 
 /* ── Uncertain prompt ── */
@@ -602,7 +887,7 @@ function showUncertainPrompt(teamKey, cupId) {
   };
   document.getElementById('unc-no').onclick = () => {
     toast.classList.add('hidden');
-    advanceTurn('confirm-miss');
+    afterShotHappened(false);
   };
 }
 
@@ -686,9 +971,11 @@ function renderPlayerRows(team) {
     ensureStats(name);
     const s = state.playerStats[name];
     const shooting = state.shootingTeam===team && (state.mode==='1v1'||state.shooterIndex[team]===i);
+    const onFire = state.onFire && state.onFire[team]===name;
     const row = document.createElement('div');
-    row.className = 'player-row'+(shooting?' shooting':'');
-    row.innerHTML = `<div class="player-row-name">${shooting?'🎯 ':''}${name}</div>
+    row.className = 'player-row'+(shooting?' shooting':'')+(onFire?' on-fire':'');
+    const icon = onFire ? '🔥 ' : (shooting ? '🎯 ' : '');
+    row.innerHTML = `<div class="player-row-name">${icon}${name}</div>
       <div class="player-row-stats"><span class="made">${s.made}</span> cups · ${s.fastest>0?s.fastest.toFixed(1)+' mph':'—'}</div>`;
     el.appendChild(row);
   }
@@ -704,8 +991,12 @@ function updateTurnIndicator() {
   const el = document.getElementById('turn-indicator');
   if (el && state) {
     const name = shooterName();
-    el.textContent = `🎯 ${name}'s turn`;
+    const onFire = state.onFire && state.onFire[state.shootingTeam]===name;
+    const icon = onFire ? '🔥' : '🎯';
+    el.textContent = `${icon} ${name}'s turn${onFire ? ' — FIRE!' : ''}`;
     el.style.color = state.shootingTeam==='A' ? 'var(--team-a)' : 'var(--team-b)';
+    if (onFire) el.style.animation = 'fire-indicator 0.6s ease-in-out infinite alternate';
+    else el.style.animation = '';
   }
 }
 
@@ -1006,7 +1297,6 @@ function stopConfetti() { if (confettiRaf) { cancelAnimationFrame(confettiRaf); 
 function saveState() {
   try {
     const gameState = {...state, eventLog: state.eventLog.map(e=>({...e, undoFn:null}))};
-    // Persist CV calibration alongside game state so resume works without re-calibrating
     const cvState = {
       calCorners: calCorners.length === 4 ? calCorners : null,
       ballHSV: Vision.ballHSV || null,
@@ -1020,7 +1310,6 @@ function loadSaved() {
     const s = localStorage.getItem(SAVE_KEY);
     if (!s) return null;
     const p = JSON.parse(s);
-    // Support new wrapped format { gameState, cvState } and legacy flat format
     const gameState = p.gameState || p;
     const cvState = p.cvState || null;
     const alive = gameState.cups &&
