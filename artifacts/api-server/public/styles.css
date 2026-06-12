@@ -1,0 +1,341 @@
+:root {
+  --bg: #0d1117;
+  --bg2: #161b22;
+  --bg3: #21262d;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text2: #8b949e;
+  --team-a: #58a6ff;
+  --team-b: #f78166;
+  --green: #3fb950;
+  --yellow: #d29922;
+  --red: #f85149;
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%; height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  overflow-x: hidden;
+}
+
+.screen { display: none; width: 100%; min-height: 100vh; }
+.screen.active { display: flex; flex-direction: column; }
+
+/* ── SETUP ── */
+.setup-container {
+  max-width: 700px; margin: 0 auto; padding: 32px 20px; width: 100%;
+}
+.logo { font-size: 3rem; font-weight: 900; letter-spacing: -1px; text-align: center; }
+.subtitle { text-align: center; color: var(--text2); margin-bottom: 32px; font-size: 1.1rem; }
+
+.setup-form { display: flex; flex-direction: column; gap: 20px; }
+
+.form-group { display: flex; flex-direction: column; gap: 8px; }
+.form-group label { font-weight: 600; font-size: 0.95rem; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
+
+.btn-group { display: flex; gap: 8px; }
+.mode-btn, .cup-btn {
+  flex: 1; padding: 14px; border: 2px solid var(--border); background: var(--bg2);
+  color: var(--text); font-size: 1rem; font-weight: 700; border-radius: var(--radius);
+  cursor: pointer; transition: all 0.15s;
+}
+.mode-btn.active, .cup-btn.active {
+  border-color: var(--team-a); color: var(--team-a); background: rgba(88,166,255,0.1);
+}
+.mode-btn:hover, .cup-btn:hover { border-color: var(--text2); }
+
+input[type="number"], input[type="text"] {
+  background: var(--bg2); border: 2px solid var(--border); color: var(--text);
+  padding: 14px 16px; border-radius: var(--radius); font-size: 1rem; width: 100%;
+  transition: border-color 0.15s;
+}
+input:focus { outline: none; border-color: var(--team-a); }
+input[type="number"] { max-width: 200px; }
+
+.teams-row { display: flex; gap: 16px; align-items: flex-start; }
+.team-setup { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+.team-label { font-size: 1.1rem; font-weight: 800; text-align: center; }
+.team-a-label { color: var(--team-a); }
+.team-b-label { color: var(--team-b); }
+.vs-divider { align-self: center; font-size: 1.3rem; font-weight: 900; color: var(--text2); margin-top: 30px; }
+
+.player-name { }
+.hidden { display: none !important; }
+
+.settings-row { gap: 12px; }
+.checkbox-label { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 0.95rem; }
+.checkbox-label input { width: 18px; height: 18px; accent-color: var(--team-a); cursor: pointer; }
+
+.btn-primary {
+  background: var(--team-a); color: #000; font-weight: 800; font-size: 1rem;
+  padding: 14px 24px; border: none; border-radius: var(--radius); cursor: pointer; transition: opacity 0.15s;
+}
+.btn-primary:hover { opacity: 0.85; }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-secondary {
+  background: var(--bg3); color: var(--text); font-weight: 600; font-size: 0.9rem;
+  padding: 10px 18px; border: 2px solid var(--border); border-radius: var(--radius); cursor: pointer; transition: all 0.15s;
+}
+.btn-secondary:hover { border-color: var(--text2); }
+.btn-danger {
+  background: var(--red); color: #fff; font-weight: 700; font-size: 0.9rem;
+  padding: 10px 18px; border: none; border-radius: var(--radius); cursor: pointer;
+}
+.btn-huge { padding: 18px 32px; font-size: 1.2rem; border-radius: 14px; }
+.btn-sm { padding: 8px 14px; font-size: 0.85rem; }
+.btn-icon {
+  background: none; border: none; font-size: 1.4rem; cursor: pointer; padding: 6px;
+  border-radius: 8px; transition: background 0.15s;
+}
+.btn-icon:hover { background: var(--bg3); }
+
+/* ── CALIBRATION ── */
+.calibrate-header {
+  padding: 20px 24px 12px; text-align: center; background: var(--bg2); border-bottom: 1px solid var(--border);
+}
+.calibrate-header h2 { font-size: 1.5rem; margin-bottom: 8px; }
+.calibrate-header p { color: var(--text2); font-size: 1rem; }
+
+.corner-markers { display: flex; gap: 16px; justify-content: center; margin-top: 12px; }
+.corner-dot {
+  width: 36px; height: 36px; border-radius: 50%; background: var(--bg3); border: 2px solid var(--border);
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1rem;
+  transition: all 0.2s;
+}
+.corner-dot.done { background: var(--green); border-color: var(--green); color: #000; }
+.corner-dot.active { border-color: var(--team-a); color: var(--team-a); animation: pulse 1s infinite; }
+.corner-labels-small { font-size: 0.78rem; color: var(--text2); margin-top: 8px; }
+
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+.canvas-wrapper {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  overflow: hidden; position: relative; background: #000;
+}
+.canvas-wrapper canvas {
+  max-width: 100%; max-height: calc(100vh - 300px);
+  display: block; cursor: crosshair;
+}
+
+.calibrate-footer {
+  padding: 16px 24px; background: var(--bg2); border-top: 1px solid var(--border);
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.hsv-info { font-size: 0.85rem; color: var(--text2); flex: 1; }
+
+.sample-dot {
+  position: absolute; width: 30px; height: 30px; border-radius: 50%;
+  border: 3px solid #fff; pointer-events: none; transform: translate(-50%, -50%);
+}
+
+.advanced-details { flex: 1; }
+.advanced-details summary { cursor: pointer; font-size: 0.9rem; color: var(--team-a); }
+.tolerance-sliders { padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.tolerance-sliders label { font-size: 0.85rem; display: flex; align-items: center; gap: 8px; }
+.tolerance-sliders input[type="range"] { flex: 1; accent-color: var(--team-a); }
+
+/* ── GAME ── */
+.game-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; background: var(--bg2); border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.game-title { font-size: 1.3rem; font-weight: 900; }
+.turn-indicator { font-size: 1rem; font-weight: 800; padding: 6px 14px; background: var(--bg3); border-radius: 8px; }
+.header-controls { display: flex; align-items: center; gap: 8px; }
+
+.game-layout {
+  display: flex; flex: 1; min-height: 0; overflow: hidden;
+}
+
+/* Team Panels */
+.team-panel {
+  width: 180px; min-width: 160px; flex-shrink: 0;
+  background: var(--bg2); border-right: 1px solid var(--border);
+  padding: 16px 12px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto;
+}
+.team-b-panel { border-right: none; border-left: 1px solid var(--border); }
+
+.team-name {
+  font-size: 1.2rem; font-weight: 900; text-align: center; padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.team-a-name { color: var(--team-a); }
+.team-b-name { color: var(--team-b); }
+
+.cups-remaining { font-size: 3.5rem; font-weight: 900; text-align: center; line-height: 1; }
+.cups-label { font-size: 0.8rem; color: var(--text2); text-align: center; margin-top: -4px; }
+
+.player-rows { display: flex; flex-direction: column; gap: 8px; }
+.player-row {
+  background: var(--bg3); border-radius: 8px; padding: 10px; cursor: pointer;
+  border: 2px solid transparent; transition: all 0.15s;
+}
+.player-row.shooting { border-color: var(--yellow); background: rgba(210,153,34,0.1); }
+.player-row-name { font-weight: 700; font-size: 0.95rem; }
+.player-row-stats { font-size: 0.78rem; color: var(--text2); margin-top: 2px; }
+.player-row-stats .made { color: var(--green); font-weight: 700; }
+
+.penalties-row, .speed-row { font-size: 0.85rem; color: var(--text2); padding-top: 6px; }
+.penalties-row span, .speed-row span { font-weight: 700; color: var(--text); }
+
+/* Center */
+.center-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.game-canvas-wrapper { flex: 1; min-height: 200px; }
+.game-canvas-wrapper canvas { cursor: default; max-height: 400px; }
+
+.speed-overlay {
+  position: absolute; top: 10px; right: 10px;
+  background: rgba(0,0,0,0.7); border-radius: 8px; padding: 6px 14px;
+  font-size: 1.4rem; font-weight: 900; color: var(--team-a);
+  pointer-events: none; display: none;
+}
+.pose-warning {
+  position: absolute; bottom: 8px; left: 8px;
+  background: rgba(210,153,34,0.9); color: #000; font-size: 0.75rem; font-weight: 700;
+  padding: 4px 10px; border-radius: 6px;
+}
+
+/* Foul banner */
+.foul-banner {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  background: rgba(248,81,73,0.95); color: #fff; font-size: 1.6rem; font-weight: 900;
+  padding: 18px 32px; border-radius: 14px; text-align: center;
+  animation: blink 0.5s ease-in-out infinite alternate;
+  z-index: 10;
+}
+@keyframes blink { from { opacity: 1; } to { opacity: 0.7; } }
+
+/* Make toast */
+.make-toast {
+  position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+  background: rgba(63,185,80,0.95); color: #000; font-size: 1.1rem; font-weight: 800;
+  padding: 12px 24px; border-radius: 12px; display: flex; align-items: center; gap: 12px;
+  z-index: 10; white-space: nowrap;
+}
+.make-toast .undo-btn {
+  background: rgba(0,0,0,0.25); border: none; color: #000; font-weight: 700;
+  padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem;
+}
+
+/* Uncertain toast */
+.uncertain-toast {
+  position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+  background: rgba(210,153,34,0.95); color: #000; font-size: 0.95rem; font-weight: 700;
+  padding: 10px 20px; border-radius: 10px; display: flex; align-items: center; gap: 10px;
+  z-index: 10; white-space: nowrap;
+}
+.uncertain-toast button {
+  background: rgba(0,0,0,0.2); border: none; color: #000; font-weight: 700;
+  padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.85rem;
+}
+
+/* Foul confirm bar */
+.foul-confirm-bar {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  background: var(--red); color: #fff; padding: 14px 20px;
+  display: flex; align-items: center; gap: 12px; z-index: 20;
+}
+.foul-confirm-bar span { flex: 1; font-weight: 700; }
+
+/* Cup Racks */
+.racks-row {
+  display: flex; gap: 12px; padding: 12px; background: var(--bg2);
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  justify-content: center; flex-wrap: wrap;
+}
+.rack-section { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.rack-label { font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+.cup-rack svg { display: block; }
+.cup-rack circle { cursor: pointer; transition: opacity 0.2s; }
+.cup-rack circle:hover { opacity: 0.7; }
+
+/* Event Log */
+.event-log-header {
+  padding: 8px 16px; font-size: 0.85rem; font-weight: 700; color: var(--text2);
+  background: var(--bg2); border-bottom: 1px solid var(--border); text-transform: uppercase; letter-spacing: 0.5px;
+}
+.event-log {
+  height: 130px; overflow-y: auto; padding: 8px 16px; background: var(--bg);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.log-entry {
+  font-size: 0.85rem; display: flex; align-items: center; gap: 8px;
+  padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.log-time { color: var(--text2); font-size: 0.75rem; min-width: 50px; }
+.log-text { flex: 1; }
+.log-undo { background: none; border: 1px solid var(--border); color: var(--text2); font-size: 0.72rem;
+  padding: 2px 8px; border-radius: 4px; cursor: pointer; }
+.log-undo:hover { color: var(--text); border-color: var(--text2); }
+
+/* Commentary */
+.commentary-bubble {
+  margin: 8px 16px; padding: 10px 14px; background: var(--bg2);
+  border-left: 3px solid var(--team-a); border-radius: 0 8px 8px 0;
+  font-size: 0.95rem; color: var(--text); animation: slideIn 0.3s ease;
+}
+@keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
+
+/* Win Screen */
+#screen-win {
+  align-items: center; justify-content: center; position: relative;
+  min-height: 100vh;
+}
+.confetti-canvas {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none;
+}
+.win-content {
+  position: relative; z-index: 1; text-align: center; padding: 40px 20px;
+  max-width: 600px; width: 100%;
+}
+.win-crown { font-size: 5rem; animation: float 2s ease-in-out infinite; }
+@keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
+.win-title { font-size: 3rem; font-weight: 900; margin: 16px 0 8px; }
+.win-subtitle { font-size: 1.2rem; color: var(--text2); margin-bottom: 24px; }
+.win-stats {
+  background: var(--bg2); border-radius: 14px; padding: 20px; margin-bottom: 28px;
+  text-align: left;
+}
+.win-stats table { width: 100%; border-collapse: collapse; }
+.win-stats th, .win-stats td { padding: 8px 12px; font-size: 0.9rem; }
+.win-stats th { color: var(--text2); font-weight: 600; border-bottom: 1px solid var(--border); }
+.win-stats td { border-bottom: 1px solid rgba(255,255,255,0.05); }
+.win-content .btn-primary { margin-bottom: 12px; display: block; }
+.win-content .btn-secondary { display: block; margin: 0 auto; }
+
+/* Modal */
+.modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  display: flex; align-items: center; justify-content: center; z-index: 100;
+}
+.modal.hidden { display: none; }
+.modal-box {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 16px;
+  padding: 28px; max-width: 400px; width: 90%; text-align: center;
+}
+.modal-box h3 { font-size: 1.4rem; margin-bottom: 10px; }
+.modal-box p { color: var(--text2); margin-bottom: 20px; font-size: 0.95rem; }
+.modal-btns { display: flex; gap: 10px; justify-content: center; }
+
+/* Responsive */
+@media (max-width: 700px) {
+  .team-panel { width: 130px; min-width: 110px; padding: 10px 8px; }
+  .cups-remaining { font-size: 2.5rem; }
+  .game-header { padding: 8px; }
+  .win-title { font-size: 2rem; }
+  .racks-row { flex-direction: column; }
+}
+
+@media (max-width: 500px) {
+  .game-layout { flex-direction: column; }
+  .team-panel { width: 100%; flex-direction: row; flex-wrap: wrap; gap: 6px; }
+  .team-b-panel { border-left: none; border-top: 1px solid var(--border); }
+  .cups-remaining { font-size: 2rem; }
+}

@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Pong Ref</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- SETUP SCREEN -->
+<div id="screen-setup" class="screen active">
+  <div class="setup-container">
+    <div class="logo">🏓 Pong Ref</div>
+    <p class="subtitle">AI-Powered Beer Pong Referee</p>
+    <div class="setup-form">
+      <div class="form-group">
+        <label>Game Mode</label>
+        <div class="btn-group">
+          <button class="mode-btn active" data-mode="1v1">1v1</button>
+          <button class="mode-btn" data-mode="2v2">2v2</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Cups Per Team</label>
+        <div class="btn-group">
+          <button class="cup-btn active" data-cups="6">6 Cups</button>
+          <button class="cup-btn" data-cups="10">10 Cups</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Table Length (feet)</label>
+        <input type="number" id="table-length" value="8" min="4" max="12" step="0.5">
+      </div>
+      <div class="teams-row">
+        <div class="team-setup team-a">
+          <div class="team-label team-a-label">Team A</div>
+          <input type="text" class="player-name" id="playerA1" placeholder="Player 1 name" value="Alice">
+          <input type="text" class="player-name player-name-2v2 hidden" id="playerA2" placeholder="Player 2 name" value="Bob">
+        </div>
+        <div class="vs-divider">VS</div>
+        <div class="team-setup team-b">
+          <div class="team-label team-b-label">Team B</div>
+          <input type="text" class="player-name" id="playerB1" placeholder="Player 1 name" value="Charlie">
+          <input type="text" class="player-name player-name-2v2 hidden" id="playerB2" placeholder="Player 2 name" value="Diana">
+        </div>
+      </div>
+      <div class="form-group settings-row">
+        <label class="checkbox-label">
+          <input type="checkbox" id="ballsBack"> Balls back rule (2 makes = extra turn)
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="strictFoul"> Foul = shot doesn't count
+        </label>
+      </div>
+      <button id="btn-start-calibration" class="btn-primary btn-huge">Start Calibration →</button>
+    </div>
+  </div>
+</div>
+
+<!-- CALIBRATION: TABLE CORNERS -->
+<div id="screen-calibrate-corners" class="screen">
+  <div class="calibrate-header">
+    <h2>Step 1: Mark Table Corners</h2>
+    <p id="corner-instruction">Click the <strong>near-left</strong> corner of the table (closest to you, left side)</p>
+    <div class="corner-markers">
+      <span class="corner-dot" id="cdot0">1</span>
+      <span class="corner-dot" id="cdot1">2</span>
+      <span class="corner-dot" id="cdot2">3</span>
+      <span class="corner-dot" id="cdot3">4</span>
+    </div>
+    <div class="corner-labels-small">1=near-left &nbsp; 2=near-right &nbsp; 3=far-left &nbsp; 4=far-right</div>
+  </div>
+  <div class="canvas-wrapper">
+    <canvas id="cal-canvas"></canvas>
+    <video id="cal-video" playsinline autoplay muted style="display:none"></video>
+  </div>
+  <div class="calibrate-footer">
+    <button id="btn-redo-corners" class="btn-secondary">Redo</button>
+  </div>
+</div>
+
+<!-- CALIBRATION: BALL COLOR -->
+<div id="screen-calibrate-ball" class="screen">
+  <div class="calibrate-header">
+    <h2>Step 2: Sample Ball Color</h2>
+    <p>Hold the ping-pong ball up to the camera and click on it</p>
+  </div>
+  <div class="canvas-wrapper">
+    <canvas id="ball-canvas"></canvas>
+    <video id="ball-video" playsinline autoplay muted style="display:none"></video>
+    <div id="ball-sample-dot" class="sample-dot hidden"></div>
+  </div>
+  <div class="calibrate-footer">
+    <div class="hsv-info" id="hsv-info"></div>
+    <button id="btn-resample" class="btn-secondary">Re-sample</button>
+    <details class="advanced-details">
+      <summary>Advanced HSV Tolerances</summary>
+      <div class="tolerance-sliders">
+        <label>Hue ±<span id="hue-val">18</span>
+          <input type="range" id="hue-tol" min="5" max="60" value="18">
+        </label>
+        <label>Saturation ±<span id="sat-val">60</span>
+          <input type="range" id="sat-tol" min="10" max="100" value="60">
+        </label>
+        <label>Min Brightness <span id="v-val">80</span>
+          <input type="range" id="v-floor" min="20" max="150" value="80">
+        </label>
+      </div>
+    </details>
+    <button id="btn-start-game" class="btn-primary btn-huge" disabled>Start Game →</button>
+  </div>
+</div>
+
+<!-- GAME SCREEN -->
+<div id="screen-game" class="screen">
+  <div class="game-header">
+    <div class="game-title">🏓 Pong Ref</div>
+    <div id="turn-indicator" class="turn-indicator">Team A's turn</div>
+    <div class="header-controls">
+      <button id="btn-pass-turn" class="btn-secondary btn-sm">Pass Turn ➡️</button>
+      <button id="btn-mute" class="btn-icon" title="Mute">🔊</button>
+      <button id="btn-recalibrate" class="btn-secondary btn-sm">Recalibrate</button>
+    </div>
+  </div>
+
+  <div class="game-layout">
+    <!-- TEAM A PANEL -->
+    <div class="team-panel team-a-panel" id="panel-team-a">
+      <div class="team-name team-a-name" id="team-a-name">Team A</div>
+      <div class="cups-remaining" id="cups-a">10</div>
+      <div class="cups-label">cups left</div>
+      <div class="player-rows" id="players-a"></div>
+      <div class="penalties-row">Penalties: <span id="penalties-a">0</span></div>
+      <div class="speed-row">Fastest: <span id="fastest-a">—</span></div>
+    </div>
+
+    <!-- CENTER PANEL -->
+    <div class="center-panel">
+      <div class="canvas-wrapper game-canvas-wrapper">
+        <canvas id="game-canvas"></canvas>
+        <video id="game-video" playsinline autoplay muted style="display:none"></video>
+        <div class="speed-overlay" id="speed-overlay"></div>
+        <div id="pose-warning" class="pose-warning hidden">⚠ Pose weak</div>
+        <div id="foul-banner" class="foul-banner hidden"></div>
+        <div id="make-toast" class="make-toast hidden"></div>
+        <div id="uncertain-toast" class="uncertain-toast hidden"></div>
+      </div>
+
+      <!-- Cup Racks -->
+      <div class="racks-row">
+        <div class="rack-section">
+          <div class="rack-label team-a-label">Team A</div>
+          <div id="rack-a" class="cup-rack"></div>
+        </div>
+        <div class="rack-section">
+          <div class="rack-label team-b-label">Team B</div>
+          <div id="rack-b" class="cup-rack"></div>
+        </div>
+      </div>
+
+      <!-- Event Log -->
+      <div class="event-log-header">📋 Event Log</div>
+      <div id="event-log" class="event-log"></div>
+
+      <!-- Commentary -->
+      <div id="commentary-bubble" class="commentary-bubble hidden"></div>
+    </div>
+
+    <!-- TEAM B PANEL -->
+    <div class="team-panel team-b-panel" id="panel-team-b">
+      <div class="team-name team-b-name" id="team-b-name">Team B</div>
+      <div class="cups-remaining" id="cups-b">10</div>
+      <div class="cups-label">cups left</div>
+      <div class="player-rows" id="players-b"></div>
+      <div class="penalties-row">Penalties: <span id="penalties-b">0</span></div>
+      <div class="speed-row">Fastest: <span id="fastest-b">—</span></div>
+    </div>
+  </div>
+
+  <div id="foul-confirm-bar" class="foul-confirm-bar hidden">
+    <span id="foul-confirm-text"></span>
+    <button id="btn-confirm-penalty" class="btn-danger">Confirm Penalty</button>
+    <button id="btn-dismiss-foul" class="btn-secondary">Dismiss</button>
+  </div>
+</div>
+
+<!-- WIN SCREEN -->
+<div id="screen-win" class="screen">
+  <canvas id="confetti-canvas" class="confetti-canvas"></canvas>
+  <div class="win-content">
+    <div class="win-crown">🏆</div>
+    <div class="win-title" id="win-title">Team A Wins!</div>
+    <div class="win-subtitle" id="win-subtitle"></div>
+    <div class="win-stats" id="win-stats"></div>
+    <button id="btn-rematch" class="btn-primary btn-huge">Rematch 🔄</button>
+    <button id="btn-new-game" class="btn-secondary">New Game</button>
+  </div>
+</div>
+
+<!-- RESUME PROMPT -->
+<div id="resume-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3>Resume Game?</h3>
+    <p>A previous game was found. Resume where you left off?</p>
+    <div class="modal-btns">
+      <button id="btn-resume-yes" class="btn-primary">Resume</button>
+      <button id="btn-resume-no" class="btn-secondary">New Game</button>
+    </div>
+  </div>
+</div>
+
+<!-- Manual cup toggle confirmation -->
+<div id="toggle-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3 id="toggle-modal-title">Toggle Cup?</h3>
+    <p id="toggle-modal-msg"></p>
+    <div class="modal-btns">
+      <button id="btn-toggle-yes" class="btn-primary">Yes</button>
+      <button id="btn-toggle-no" class="btn-secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+<script src="commentary.js"></script>
+<script src="vision.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
