@@ -1,0 +1,103 @@
+# Replit One-Shot Prompt: Beer Pong Vision Referee
+
+Copy everything below the line into Replit Agent.
+
+---
+
+Build a complete, single-page web app called **Pong Ref** that uses my laptop/phone webcam to referee a beer pong game in real time. Vanilla JavaScript + HTML + CSS only (no build step, no React, no bundler). All CV libraries loaded via CDN. The app must run immediately with zero configuration beyond camera permission.
+
+## Tech stack (do not substitute)
+- MediaPipe Pose (CDN: @mediapipe/pose) for player skeleton/elbow tracking
+- Raw canvas pixel analysis (HSV color segmentation) for ball tracking, no extra CV library
+- Web Speech API (speechSynthesis) for spoken commentary
+- Anthropic Messages API (fetch to https://api.anthropic.com/v1/messages, model claude-sonnet-4-6) for AI commentary text. Read the API key from an environment variable ANTHROPIC_API_KEY exposed through a tiny Node/Express backend proxy endpoint POST /api/commentary so the key never appears in client code. If the key is missing, fall back gracefully to a built-in library of 40+ canned commentary lines (templated with player names and game state) so the app never breaks.
+- Serve static files with the same Express server.
+
+## Game setup screen (shown first)
+1. Mode selector: **1v1** or **2v2**.
+2. Player name inputs (2 or 4 fields based on mode), Team A and Team B.
+3. Cup count per team: 6 or 10 (triangle rack).
+4. Table length input in feet (default 8) — used to convert pixels to real-world speed.
+5. "Start Calibration" button.
+
+## Calibration screen (critical, do this carefully)
+Live webcam feed on a canvas. The user clicks 4 points in order, with on-screen step-by-step instructions and visible numbered markers:
+1. Near table edge, left corner
+2. Near table edge, right corner (these two define **the foul line** for elbow detection on the near side)
+3. Far table edge, left corner
+4. Far table edge, right corner
+
+From these 4 points compute:
+- The foul line (near edge) and far line as line equations in image space.
+- Pixels-per-foot scale using the known table length between near and far edges (account for the fact this is approximate due to perspective; use the average of left-edge and right-edge pixel distances).
+- A table polygon region of interest (ROI) used to limit ball tracking to relevant pixels.
+
+Then a second quick step: user clicks once on the ping pong ball held up to the camera. Sample a 15x15 pixel patch, convert to HSV, and store the median hue/saturation as the ball color signature with generous tolerance bands (±18 hue, ±60 saturation, value floor 80). Show a live preview mask so the user can see the ball being isolated, with a "Re-sample" button and manual HSV tolerance sliders in an "Advanced" collapsible for robustness in bad lighting.
+
+A "Recalibrate" button must be available at all times during the game.
+
+## Main game screen layout
+Three-column layout (stacks vertically on mobile):
+- **Left panel**: Team A scoreboard — player names, cups remaining, cups made per player, penalty count, current shooter indicator.
+- **Center**: live webcam canvas with overlays (pose skeleton, foul line drawn in red, ball trail, trajectory arc, speed readout). Below it: event log feed (timestamped: makes, misses, penalties, turns).
+- **Right panel**: Team B scoreboard, same as left.
+
+Below the video: **cup rack visualizers** for both teams. Each rack is an SVG triangle of circles (10-cup: 4-3-2-1, 6-cup: 3-2-1) labeled with position numbers. When a cup is made, draw a bold red X over that circle and gray it out. Remaining cups stay full-color. This SVG is the persistent visual memory of exactly which cups are gone and which remain. Clicking a cup circle manually toggles its made/active state (with an undo confirmation) so the game state can always be corrected.
+
+## Feature 1: Elbow foul detection
+Run MediaPipe Pose on the video at ~15 fps. For the active shooter's side, track wrist and elbow landmarks. A foul fires when, during a detected throw (wrist moving forward past the elbow with velocity above a threshold), the elbow's image position crosses the foul line toward the table by more than a 12-pixel grace buffer.
+
+When a foul is detected:
+- Flash the foul line yellow, show a 3-second "ELBOWS! Penalty on [player]" banner.
+- Show two buttons: **Confirm Penalty** / **Dismiss (false positive)**. Only a confirmed penalty increments the penalty counter and logs to the event feed. Auto-dismiss after 8 seconds with no action.
+- House rule setting (in a settings gear): penalty = warning only, or penalty = shot doesn't count even if made.
+
+Debounce: no more than one foul event per 3 seconds. If pose confidence is below 0.5, suppress foul detection entirely rather than firing garbage events, and show a small "pose tracking weak" indicator.
+
+## Feature 2: Ball tracking, trajectory arc, and speed
+Every frame, within the table ROI plus a margin above it, build a binary mask of pixels matching the calibrated ball HSV signature. Find the largest connected blob between 4 and 400 pixels in area; its centroid is the ball position. Maintain a rolling buffer of the last 30 positions with timestamps.
+
+- **Throw detection**: a throw starts when the ball appears near the shooter's side and moves with sustained velocity for 4+ consecutive frames; it ends when the ball disappears, reverses sharply, or 1.5 seconds elapse.
+- **Trajectory arc**: during and for 4 seconds after each throw, fit a parabola (least squares, y as quadratic in x) to the tracked points and draw it as a smooth glowing arc overlay on the canvas, plus the raw tracked points as small dots. Keep the last throw's arc visible until the next throw, fading to 40% opacity.
+- **Speed**: compute peak speed during the throw from frame-to-frame centroid displacement, convert pixels to feet using calibration, display as mph with one decimal in a large readout ("Last shot: 11.3 mph"). Store per-throw speed in the event log and track each player's fastest shot of the game in the scoreboard.
+
+If ball tracking is lost mid-flight (occlusion), keep the parabola fit from available points rather than dropping the arc. Never crash on zero tracked points.
+
+## Feature 3: Cup makes (detect-and-confirm, this is the robustness key)
+Fully automatic make detection from one camera is unreliable, so implement **assisted scoring**:
+- When a throw ends with the ball's last tracked position inside the defending team's cup zone (the far third of the table polygon for the shooting direction) and the ball disappears there (sinks into a cup), flag a **probable make**: play a ding, show a large modal with three buttons: **MADE IT — pick the cup**, **Missed**, **Bounce/other**.
+- On "Made it," show the defending team's cup rack large; the user taps which cup. That cup gets the X, cups-remaining decrements, the shooter's made count increments, and the event logs "[Player] sinks cup #4 at 9.8 mph."
+- Every make/miss can be undone from the event log (each log entry has an undo icon).
+
+Turn tracking: after a resolved shot, advance the shooter indicator according to mode (1v1 alternates; 2v2 alternates teams with both teammates shooting per turn, with a setting for "balls back on 2 makes" that gives the team another turn). The user can also tap any player name to force-set the current shooter.
+
+**Win condition**: when a team's cups-remaining hits 0, full-screen victory overlay with the winning team, final stats table (cups per player, fastest shot, penalties), confetti via canvas particles, and a "Rematch" button that resets cups but keeps players and calibration.
+
+## Feature 4: AI commentary
+On every significant event (make, miss streak of 3+, penalty, fastest shot of the game, last cup, win), POST to /api/commentary with a JSON game state summary: players, score, cups remaining, the event, shot speed, streaks. The backend calls the Anthropic API with a system prompt: "You are an over-the-top, hilarious sports commentator for a beer pong game. Respond with ONE short punchy line of commentary, max 20 words, no preamble, no quotes." Max tokens 60.
+
+Speak the returned line with speechSynthesis (pick an energetic voice if available, rate 1.1) and display it in a styled "🎙️ commentary" bubble in the event feed. Queue commentary requests so they never overlap audio; drop queued items older than 10 seconds. Mute toggle in the header. If the API call fails or no key is set, use the canned-line library seamlessly — never show an error to users mid-game, just log to console.
+
+## Robustness requirements (apply everywhere)
+- The app must never throw an uncaught exception from a CV edge case: zero pose landmarks, zero ball pixels, division by zero in parabola fits, camera denied, camera disconnected mid-game. Guard all of it; degrade features individually rather than killing the app.
+- All game state lives in a single state object, persisted to localStorage on every change, restored on reload with a "Resume game?" prompt. NOTE: this app runs in normal browsers on Replit hosting, so localStorage is fine here.
+- requestAnimationFrame render loop decoupled from CV processing (pose at ~15 fps, ball tracking at full fps but skip frames if processing falls behind; never let CV block the UI thread for more than 30ms — use setTimeout yielding if needed).
+- Works on mobile Safari and Chrome: use playsinline on the video element, handle facingMode environment camera, responsive layout.
+- Dark theme, bold readable scoreboard typography visible across a room, large touch targets (this gets used by people who have been drinking).
+
+## File structure
+- server.js (Express: static files + /api/commentary proxy)
+- public/index.html
+- public/app.js (game state, UI, screens)
+- public/vision.js (pose, ball tracking, calibration math, trajectory/speed)
+- public/commentary.js (queue, TTS, canned lines)
+- public/styles.css
+
+## Acceptance checklist (verify all before finishing)
+1. App loads, setup → calibration → game flow works with no console errors.
+2. Foul line renders correctly from calibration clicks; simulated elbow crossing logs a confirmable penalty.
+3. Ball color sampling shows a live mask preview; a tossed ball produces a drawn arc and an mph readout.
+4. Cup rack SVGs render for both teams; tapping cups toggles X marks; makes decrement correctly; undo works.
+5. Win condition triggers at 0 cups with stats and rematch.
+6. Commentary speaks (canned lines if no API key) and never blocks gameplay.
+7. Refreshing mid-game offers resume and restores exact cup states, scores, and penalties.
