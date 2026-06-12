@@ -114,7 +114,20 @@ function initSetupScreen() {
   if (saved) {
     document.getElementById('resume-modal').classList.remove('hidden');
     document.getElementById('btn-resume-yes').onclick = () => {
-      state = saved;
+      state = saved.gameState;
+      // Restore CV calibration so tracking works without re-calibrating
+      const cv = saved.cvState;
+      if (cv) {
+        if (cv.calCorners && cv.calCorners.length === 4) calCorners = cv.calCorners;
+        if (cv.ballHSV) Vision.ballHSV = cv.ballHSV;
+        if (cv.hsvTol) Vision.setHsvTol(cv.hsvTol);
+        // Ensure window._cfg is available for any remaining references
+        window._cfg = window._cfg || {
+          tableFt: state.tableFt, cupCount: state.cupCount,
+          mode: state.mode, ballsBack: state.ballsBack, strictFoul: state.strictFoul,
+          players: state.players
+        };
+      }
       document.getElementById('resume-modal').classList.add('hidden');
       startGame();
     };
@@ -379,7 +392,10 @@ async function startGame() {
   if (ok) {
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
-    Vision.setCalibration(calCorners.length===4 ? calCorners : generateDefaultCorners(canvas), window._cfg ? window._cfg.tableFt : 8);
+    Vision.setCalibration(
+      calCorners.length===4 ? calCorners : generateDefaultCorners(canvas),
+      state.tableFt || 8
+    );
     Vision.setCupLayout(state.cupCount);
     Vision.startTracking({
       onThrowStart, onSpeed, onMakeDetected, onFoulDetected
@@ -836,8 +852,14 @@ function stopConfetti() { if (confettiRaf) { cancelAnimationFrame(confettiRaf); 
 /* ── Persistence ── */
 function saveState() {
   try {
-    const s = {...state, eventLog: state.eventLog.map(e=>({...e, undoFn:null}))};
-    localStorage.setItem(SAVE_KEY, JSON.stringify(s));
+    const gameState = {...state, eventLog: state.eventLog.map(e=>({...e, undoFn:null}))};
+    // Persist CV calibration alongside game state so resume works without re-calibrating
+    const cvState = {
+      calCorners: calCorners.length === 4 ? calCorners : null,
+      ballHSV: Vision.ballHSV || null,
+      hsvTol: {...Vision.hsvTol}
+    };
+    localStorage.setItem(SAVE_KEY, JSON.stringify({ gameState, cvState }));
   } catch(e) {}
 }
 function loadSaved() {
@@ -845,8 +867,12 @@ function loadSaved() {
     const s = localStorage.getItem(SAVE_KEY);
     if (!s) return null;
     const p = JSON.parse(s);
-    const alive = p.cups&&(p.cups.teamA.some(c=>!c.made)||p.cups.teamB.some(c=>!c.made));
-    return alive ? p : null;
+    // Support new wrapped format { gameState, cvState } and legacy flat format
+    const gameState = p.gameState || p;
+    const cvState = p.cvState || null;
+    const alive = gameState.cups &&
+      (gameState.cups.teamA.some(c=>!c.made) || gameState.cups.teamB.some(c=>!c.made));
+    return alive ? { gameState, cvState } : null;
   } catch(e) { return null; }
 }
 function clearSaved() { localStorage.removeItem(SAVE_KEY); }
