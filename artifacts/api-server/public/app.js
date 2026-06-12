@@ -25,6 +25,7 @@ let ballSampled = false;
 let pendingMask = false;
 let confettiRaf = null;
 const SAVE_KEY = 'pongref_v3';
+const HISTORY_KEY = 'pongref_history_v1';
 
 function freshState(cfg) {
   const n = cfg.cupCount;
@@ -786,7 +787,140 @@ function renderEventLog() {
   }
 }
 
-/* ── Win Screen ── */
+/* ── Game History ── */
+function saveGameToHistory(winner, loser) {
+  const entry = {
+    date: Date.now(),
+    winner: teamDisplayName(winner),
+    loser: teamDisplayName(loser),
+    duration: Math.round((Date.now()-state.startTime)/60000),
+    cupCount: state.cupCount,
+    mode: state.mode,
+    playerStats: JSON.parse(JSON.stringify(state.playerStats)),
+    penalties: {...state.penalties},
+    fastest: {...state.fastest}
+  };
+  try {
+    const history = JSON.parse(localStorage.getItem(HISTORY_KEY)||'[]');
+    history.unshift(entry);
+    if (history.length > 10) history.length = 10;
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  } catch(e) {}
+}
+
+function renderHistory() {
+  try {
+    const history = JSON.parse(localStorage.getItem(HISTORY_KEY)||'[]');
+    const section = document.getElementById('history-section');
+    const list = document.getElementById('history-list');
+    if (!history.length) { section.classList.add('hidden'); return; }
+    section.classList.remove('hidden');
+    list.innerHTML = history.map(g => {
+      const d = new Date(g.date);
+      const dateStr = d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ', ' +
+        d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+      const allPlayers = Object.entries(g.playerStats||{});
+      const topSpeed = allPlayers.reduce((best,[,s]) => Math.max(best, s.fastest||0), 0);
+      const speedStr = topSpeed > 0 ? ` • ${topSpeed.toFixed(1)} mph top speed` : '';
+      return `<div class="history-item">
+        <div class="history-item-top">
+          <span class="history-winner">🏆 ${g.winner}</span>
+          <span class="history-date">${dateStr}</span>
+        </div>
+        <div class="history-meta">vs ${g.loser} • ${g.cupCount} cups • ${g.duration} min${speedStr}</div>
+      </div>`;
+    }).join('');
+  } catch(e) {}
+}
+
+/* ── Stat Card Canvas ── */
+function buildStatCard(winner, loser) {
+  const W = 600, H = 380;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+
+  const winColor = winner==='A' ? '#58a6ff' : '#f78166';
+  const font = (sz, weight) => `${weight||'normal'} ${sz}px system-ui,-apple-system,sans-serif`;
+
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = '#30363d'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect(1, 1, W-2, H-2, 14); ctx.stroke();
+
+  ctx.fillStyle = '#161b22';
+  ctx.beginPath(); ctx.roundRect(1, 1, W-2, 60, [14, 14, 0, 0]); ctx.fill();
+
+  ctx.font = font(20, 'bold'); ctx.fillStyle = '#58a6ff';
+  ctx.fillText('🏓 Pong Ref', 22, 38);
+
+  const dateStr = new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  ctx.font = font(13); ctx.fillStyle = '#8b949e';
+  ctx.textAlign = 'right'; ctx.fillText(dateStr, W-22, 38); ctx.textAlign = 'left';
+
+  const winnerName = teamDisplayName(winner);
+  const loserName  = teamDisplayName(loser);
+  ctx.font = font(28, 'bold'); ctx.fillStyle = winColor;
+  ctx.fillText('🏆 ' + winnerName + ' wins!', 22, 104);
+  ctx.font = font(14); ctx.fillStyle = '#8b949e';
+  ctx.fillText('vs ' + loserName, 22, 124);
+
+  ctx.strokeStyle = '#30363d'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(22, 142); ctx.lineTo(W-22, 142); ctx.stroke();
+
+  const cols = [22, 230, 360, 480];
+  ctx.font = font(12, '600'); ctx.fillStyle = '#8b949e';
+  ['PLAYER','CUPS','FASTEST','FOULS'].forEach((h,i) => ctx.fillText(h, cols[i], 165));
+
+  const allPlayers = [...(state.players.A||[]), ...(state.players.B||[])].filter(Boolean);
+  let y = 192;
+  for (const name of allPlayers) {
+    const s = state.playerStats[name]||{made:0,fastest:0,penalties:0};
+    ctx.font = font(15); ctx.fillStyle = '#e6edf3';
+    ctx.fillText(name, cols[0], y);
+    ctx.fillText(String(s.made), cols[1], y);
+    ctx.fillText(s.fastest>0 ? s.fastest.toFixed(1)+' mph' : '—', cols[2], y);
+    ctx.fillText(String(s.penalties), cols[3], y);
+    y += 30;
+  }
+
+  ctx.strokeStyle = '#30363d'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(22, H-46); ctx.lineTo(W-22, H-46); ctx.stroke();
+
+  const dur = Math.round((Date.now()-state.startTime)/60000);
+  ctx.font = font(13); ctx.fillStyle = '#8b949e';
+  ctx.fillText(`⏱ ${dur} min  •  ${state.cupCount} cups  •  ${state.mode.toUpperCase()}`, 22, H-20);
+  ctx.textAlign = 'right'; ctx.fillText('pongref.app', W-22, H-20); ctx.textAlign = 'left';
+
+  return c;
+}
+
+async function shareStats(winner, loser) {
+  const canvas = buildStatCard(winner, loser);
+  const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+  const file = new File([blob], 'pongref-stats.png', {type:'image/png'});
+
+  if (navigator.share && typeof navigator.canShare === 'function' && navigator.canShare({files:[file]})) {
+    try {
+      await navigator.share({
+        title: teamDisplayName(winner) + ' wins! 🏓',
+        text: 'Check out these Pong Ref stats',
+        files: [file]
+      });
+      return;
+    } catch(e) {
+      if (e.name === 'AbortError') return;
+    }
+  }
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'pongref-stats.png';
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function showWinScreen(winner, loser) {
   showScreen('screen-win');
   const winnerName = teamDisplayName(winner);
@@ -795,9 +929,13 @@ function showWinScreen(winner, loser) {
   const dur = Math.round((Date.now()-state.startTime)/60000);
   document.getElementById('win-subtitle').textContent = `Game over in ${dur} minute${dur!==1?'s':''}`;
   buildWinStats(winner);
+  saveGameToHistory(winner, loser);
+  renderHistory();
   startConfetti();
   Commentary.fire('win', { team:winnerName,
     losingTeam:teamDisplayName(loser), win:true });
+
+  document.getElementById('btn-share-stats').onclick = () => shareStats(winner, loser);
 
   document.getElementById('btn-rematch').onclick = () => {
     stopConfetti();

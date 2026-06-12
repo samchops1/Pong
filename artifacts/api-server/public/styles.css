@@ -309,6 +309,27 @@ input[type="number"] { max-width: 200px; }
 .win-stats td { border-bottom: 1px solid rgba(255,255,255,0.05); }
 .win-content .btn-primary { margin-bottom: 12px; display: block; }
 .win-content .btn-secondary { display: block; margin: 0 auto; }
+.btn-share {
+  display: block; width: 100%; padding: 14px 20px; margin-bottom: 12px;
+  background: linear-gradient(135deg, #238636, #2ea043);
+  color: #fff; font-size: 1rem; font-weight: 700;
+  border: none; border-radius: 10px; cursor: pointer;
+  transition: opacity 0.15s;
+}
+.btn-share:hover { opacity: 0.85; }
+.btn-share:active { opacity: 0.7; }
+.history-section { margin-top: 28px; text-align: left; }
+.history-header { font-size: 0.85rem; font-weight: 700; color: var(--text2);
+  text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 10px; }
+.history-list { display: flex; flex-direction: column; gap: 8px; }
+.history-item {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 14px; font-size: 0.85rem;
+}
+.history-item-top { display: flex; justify-content: space-between; align-items: center; }
+.history-winner { font-weight: 700; color: var(--text); }
+.history-date { color: var(--text2); font-size: 0.78rem; }
+.history-meta { color: var(--text2); margin-top: 3px; font-size: 0.78rem; }
 
 /* Modal */
 .modal {
