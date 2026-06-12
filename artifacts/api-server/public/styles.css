@@ -401,6 +401,21 @@ input[type="number"] { max-width: 200px; }
   to   { transform: translateX(-50%) scale(1.05); box-shadow: 0 6px 28px rgba(188,140,255,0.75); }
 }
 
+/* ── Chandeliers banner ── */
+.chandeliers-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 35;
+  background: linear-gradient(90deg, #7c3aed 0%, #2563eb 100%);
+  color: #fff; text-align: center; font-size: 1rem; font-weight: 800;
+  padding: 10px 16px; letter-spacing: 0.04em;
+  box-shadow: 0 3px 16px rgba(0,0,0,0.5);
+}
+/* ── Call Island button inside island banner ── */
+.btn-call-island {
+  background: #16a34a; color: #fff; border: none; border-radius: 8px;
+  font-size: 0.82rem; font-weight: 700; padding: 5px 11px; cursor: pointer; white-space: nowrap;
+}
+.btn-call-island:hover { background: #15803d; }
+
 /* ── Island reminder ── */
 .island-banner {
   position: fixed; top: 62px; left: 50%; transform: translateX(-50%);

@@ -14,6 +14,11 @@ const CUP_POSITIONS_6 = [
   {id:4,cx:50,cy:66},{id:5,cx:90,cy:66},
   {id:6,cx:70,cy:32}
 ];
+// Chandeliers overtime: 3 bottom + 1 top (id 4 = top, must be made first)
+const CUP_POSITIONS_CHANDELIERS = [
+  {id:1,cx:20,cy:80},{id:2,cx:60,cy:80},{id:3,cx:100,cy:80},
+  {id:4,cx:60,cy:44}
+];
 
 /* ── State ── */
 let state = null;
@@ -24,7 +29,7 @@ let ballPreviewActive = false;
 let ballSampled = false;
 let pendingMask = false;
 let confettiRaf = null;
-const SAVE_KEY = 'pongref_v4';
+const SAVE_KEY = 'pongref_v5';
 const HISTORY_KEY = 'pongref_history_v1';
 
 function freshState(cfg) {
@@ -58,7 +63,11 @@ function freshState(cfg) {
     isRebuttal: false,
     rebuttalTeam: null,
     rebuttalShotsLeft: 0,
-    rebuttalMakes: 0
+    rebuttalMakes: 0,
+    isChandeliers: false,
+    chandeliersTopMade: {teamA: false, teamB: false},
+    islandCallsUsed: {},
+    pendingIslandCall: null
   };
 }
 
@@ -91,11 +100,19 @@ function initSetupScreen() {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.mode-btn').forEach(b=>b.classList.remove('active'));
       btn.classList.add('active');
+      const is2v2 = btn.dataset.mode === '2v2';
       document.querySelectorAll('.player-name-2v2').forEach(el => {
-        el.classList.toggle('hidden', btn.dataset.mode !== '2v2');
+        el.classList.toggle('hidden', !is2v2);
       });
+      // Balls-back only applies in 2v2 (1v1 uses one ball — no balls-back possible)
+      const bbLabel = document.getElementById('ballsBack')?.closest('label');
+      if (bbLabel) bbLabel.classList.toggle('hidden', !is2v2);
     });
   });
+
+  // Initialize: 1v1 is default, so hide balls-back (2v2-only rule)
+  const bbLabel = document.getElementById('ballsBack')?.closest('label');
+  if (bbLabel) bbLabel.classList.add('hidden');
 
   document.querySelectorAll('.cup-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -533,6 +550,13 @@ function autoScoreCup(teamKey, cupId) {
   const cup = (state.cups[teamKey]||[]).find(c=>c.id===cupId);
   if (!cup || cup.made) return;
 
+  // Chandeliers: top cup (id 4, shown as ★) must be made before bottom cups 1–3
+  if (state.isChandeliers && cupId !== 4 && !state.chandeliersTopMade[teamKey]) {
+    addEvent(`🕯️ Make the top cup (★) first!`, 'warning');
+    return;
+  }
+  if (state.isChandeliers && cupId === 4) state.chandeliersTopMade[teamKey] = true;
+
   const shooter = shooterName();
   ensureStats(shooter);
   cup.made = true;
@@ -560,6 +584,21 @@ function autoScoreCup(teamKey, cupId) {
   }
   if (state.onFire[defenderTeamLetter]) {
     state.onFire[defenderTeamLetter] = null;
+  }
+
+  // Island call bonus: if shooter called island on THIS cup, score 1 extra cup
+  state.pendingIslandCall = state.pendingIslandCall || null;
+  if (state.pendingIslandCall && state.pendingIslandCall.player === shooter) {
+    if (cupId === state.pendingIslandCall.cupId) {
+      const bonusCup = (state.cups[teamKey]||[]).find(c => !c.made);
+      if (bonusCup) {
+        bonusCup.made = true; bonusCup.madeBy = shooter;
+        if (state.playerStats[shooter]) state.playerStats[shooter].made++;
+        addEvent(`🏝 ISLAND! ${shooter} called it — 2 cups!`, 'island');
+        Commentary.fire('island', { player: shooter });
+      }
+    }
+    state.pendingIslandCall = null; // Always clear after shooter's cup event
   }
 
   const teamLetter = defenderTeamLetter;
@@ -619,10 +658,18 @@ function triggerSameCupBonus(teamKey) {
 
 /* ── Win / Rebuttal ── */
 function checkWinCondition(teamKey) {
+  if (state.isRebuttal) return false; // During rebuttal handled in handleRebuttalShot
   const remaining = (state.cups[teamKey]||[]).filter(c=>!c.made).length;
   if (remaining === 0) {
     const attacker = state.shootingTeam;
     const defender = attacker==='A'?'B':'A';
+    if (state.isChandeliers) {
+      // In chandeliers, no further rebuttal — direct win
+      Vision.stopTracking(); Vision.stopCamera();
+      clearSaved();
+      setTimeout(() => showWinScreen(attacker, defender), 600);
+      return true;
+    }
     startRebuttal(attacker, defender, teamKey);
     return true;
   }
@@ -657,10 +704,19 @@ function startRebuttal(attacker, defender, teamKey) {
 }
 
 function handleRebuttalShot(wasMake) {
-  if (wasMake) state.rebuttalMakes++;
-  state.rebuttalShotsLeft--;
-
   const defender = state.rebuttalTeam;
+
+  if (wasMake) {
+    state.rebuttalMakes++;
+    // If attacker's rack is now empty too → both at 0 → Chandeliers overtime
+    const attacker = defender==='A'?'B':'A';
+    const attackerKey = attacker==='A'?'teamA':'teamB';
+    if ((state.cups[attackerKey]||[]).filter(c=>!c.made).length === 0) {
+      startChandeliers();
+      return;
+    }
+  }
+  state.rebuttalShotsLeft--;
 
   if (state.rebuttalShotsLeft > 0 && state.mode==='2v2') {
     state.shooterIndex[defender] = 1;
@@ -717,6 +773,69 @@ function endRebuttal() {
   }
 }
 
+/* ── Chandeliers Overtime ── */
+function startChandeliers() {
+  // Clear rebuttal state
+  state.isRebuttal = false;
+  state.rebuttalTeam = null;
+  state.rebuttalShotsLeft = 0;
+  state.rebuttalMakes = 0;
+  const overlay = document.getElementById('rebuttal-overlay');
+  if (overlay) overlay.classList.add('hidden');
+
+  // Reset both racks to 4-cup chandelier pyramid
+  state.isChandeliers = true;
+  state.chandeliersTopMade = {teamA: false, teamB: false};
+  const makeChanCups = () => [
+    {id:1,made:false,madeBy:null},{id:2,made:false,madeBy:null},
+    {id:3,made:false,madeBy:null},{id:4,made:false,madeBy:null}
+  ];
+  state.cups.teamA = makeChanCups();
+  state.cups.teamB = makeChanCups();
+
+  // Reset turn/fire/island state — Team A shoots first
+  state.shootingTeam = 'A';
+  state.shooterIndex = {A:0, B:0};
+  state.makesThisTurn = 0;
+  state.turnMakesPerPlayer = {};
+  state.turnFirstCupId = null;
+  state.onFire = {A:null, B:null};
+  state.fireStreak = {};
+  state.pendingIslandCall = null;
+
+  // Hide island and BTB banners — they don't apply in chandeliers
+  const islandBanner = document.getElementById('island-banner');
+  if (islandBanner) islandBanner.classList.add('hidden');
+  const btbBtn = document.getElementById('btb-btn');
+  if (btbBtn) btbBtn.classList.add('hidden');
+  const chanBanner = document.getElementById('chandeliers-banner');
+  if (chanBanner) chanBanner.classList.remove('hidden');
+
+  addEvent('🕯️ CHANDELIERS! Overtime — top cup (★) first, pull cup, no rebounds!', 'chandeliers');
+  Commentary.fire('chandeliers', {});
+  updateCupCount(); renderRacks(); updateTeamPanels(); updateTurnIndicator(); saveState();
+}
+
+function findLoneCupId(teamKey) {
+  const cups = state.cups[teamKey]||[];
+  const remaining = cups.filter(c=>!c.made);
+  if (remaining.length === 1) return remaining[0].id;
+  const positions = cups.length===10 ? CUP_POSITIONS_10 : cups.length===4 ? CUP_POSITIONS_CHANDELIERS : CUP_POSITIONS_6;
+  const THRESH = 48;
+  for (const cup of remaining) {
+    const pos = positions.find(p=>p.id===cup.id);
+    if (!pos) continue;
+    const hasNeighbor = remaining.some(other => {
+      if (other.id===cup.id) return false;
+      const oPos = positions.find(p=>p.id===other.id);
+      if (!oPos) return false;
+      return Math.hypot(pos.cx-oPos.cx, pos.cy-oPos.cy) < THRESH;
+    });
+    if (!hasNeighbor) return cup.id;
+  }
+  return null;
+}
+
 /* ── Central shot handler ── */
 function afterShotHappened(wasMake) {
   if (!state) return;
@@ -736,9 +855,15 @@ function afterShotHappened(wasMake) {
       Commentary.fire('fire_end', { player: shooter });
       state.onFire[t] = null;
     }
-    // Show behind-the-back button (appears briefly after a miss)
-    const defendingKey = t==='A' ? 'teamB' : 'teamA';
-    showBehindBackButton(shooter, defendingKey);
+    // Clear pending island call on miss (shooter didn't attempt the called cup)
+    if (state.pendingIslandCall && state.pendingIslandCall.player === shooter) {
+      state.pendingIslandCall = null; renderRacks();
+    }
+    // Behind-the-back not available in chandeliers (no rebounds rule)
+    if (!state.isChandeliers) {
+      const defendingKey = t==='A' ? 'teamB' : 'teamA';
+      showBehindBackButton(shooter, defendingKey);
+    }
   }
 
   // Fire player keeps shooting on makes
@@ -758,6 +883,7 @@ function afterShotHappened(wasMake) {
       Commentary.fire('fire', { player: secondShooter });
     }
     updateTurnIndicator(); updateTeamPanels(); saveState();
+    checkIslandReminder(); // Notify shooter 1 if opponent has lone cup they can call
     return;
   }
 
@@ -771,7 +897,7 @@ function advanceTurn(source) {
   const outgoingT = gs.shootingTeam;
 
   // Balls-back check
-  if (gs.ballsBack && gs.makesThisTurn >= 2 && !gs.isRebuttal) {
+  if (gs.ballsBack && gs.mode === '2v2' && !gs.isChandeliers && gs.makesThisTurn >= 2 && !gs.isRebuttal) {
     gs.makesThisTurn = 0;
     gs.turnMakesPerPlayer = {};
     gs.turnFirstCupId = null;
@@ -872,7 +998,7 @@ function hasLoneCup(teamKey) {
   const remaining = cups.filter(c=>!c.made);
   if (remaining.length === 0) return false;
   if (remaining.length === 1) return true;
-  const positions = cups.length===10 ? CUP_POSITIONS_10 : CUP_POSITIONS_6;
+  const positions = cups.length===10 ? CUP_POSITIONS_10 : cups.length===4 ? CUP_POSITIONS_CHANDELIERS : CUP_POSITIONS_6;
   const THRESH = 48;
   for (const cup of remaining) {
     const pos = positions.find(p=>p.id===cup.id);
@@ -889,19 +1015,49 @@ function hasLoneCup(teamKey) {
 }
 
 function checkIslandReminder() {
-  const aHas = hasLoneCup('teamA');
-  const bHas = hasLoneCup('teamB');
-  if (!aHas && !bHas) return;
+  if (state.isChandeliers) return; // No island rule in chandeliers overtime
+  const t = state.shootingTeam;
+  const myKey  = t==='A' ? 'teamA' : 'teamB';
+  const oppKey = t==='A' ? 'teamB' : 'teamA';
+  const myHas  = hasLoneCup(myKey);   // own lone cup → remind to move
+  const oppHas = hasLoneCup(oppKey);  // opp lone cup → can call island
+
   const banner = document.getElementById('island-banner');
   if (!banner) return;
-  let msg = '🏝 Lone cup — move to center! ';
-  if (aHas && bHas) msg = '🏝 Lone cups on both sides — move to center!';
-  else if (aHas) msg = '🏝 Team A has a lone cup — move it to center!';
-  else msg = '🏝 Team B has a lone cup — move it to center!';
-  banner.querySelector('#island-text').textContent = msg;
+  if (!myHas && !oppHas) { banner.classList.add('hidden'); return; }
+
+  let msg = '';
+  if (myHas && oppHas)  msg = '🏝 Lone cups on both sides — move to center!';
+  else if (myHas)       msg = `🏝 Your rack has a lone cup — move to center!`;
+  else                  msg = '🏝 Opponent has a lone cup!';
+
+  const textEl = banner.querySelector('#island-text');
+  if (textEl) textEl.textContent = msg;
+
+  // Show "Call Island" button if opponent's rack has lone cup and shooter hasn't used their call
+  const callBtn = document.getElementById('btn-call-island');
+  if (callBtn) {
+    const shooter = shooterName();
+    const islandUsed = (state.islandCallsUsed||{})[shooter];
+    const canCall = oppHas && !islandUsed && !state.pendingIslandCall;
+    callBtn.classList.toggle('hidden', !canCall);
+    if (canCall) {
+      const loneCupId = findLoneCupId(oppKey);
+      callBtn.onclick = () => {
+        state.islandCallsUsed = state.islandCallsUsed || {};
+        state.islandCallsUsed[shooter] = true;
+        state.pendingIslandCall = { player: shooter, cupId: loneCupId, teamKey: oppKey };
+        addEvent(`🏝 ${shooter} calls ISLAND on Cup ${loneCupId}!`, 'island');
+        Commentary.fire('island_call', { player: shooter });
+        banner.classList.add('hidden');
+        renderRacks(); saveState();
+      };
+    }
+  }
+
   banner.classList.remove('hidden');
   clearTimeout(banner._t);
-  banner._t = setTimeout(() => banner.classList.add('hidden'), 8000);
+  banner._t = setTimeout(() => banner.classList.add('hidden'), 10000);
 }
 
 /* ── Uncertain prompt ── */
@@ -1052,8 +1208,13 @@ function renderRacks() {
 
 function buildRackSVG(teamKey, cups, color) {
   const n = cups.length;
-  const positions = n===10 ? CUP_POSITIONS_10 : CUP_POSITIONS_6;
-  const svgW = n===10?165:135, svgH = n===10?150:120, R=16;
+  const positions = n===10 ? CUP_POSITIONS_10 : n===4 ? CUP_POSITIONS_CHANDELIERS : CUP_POSITIONS_6;
+  const svgW = n===10?165:n===4?120:135, svgH = n===10?150:n===4?100:120, R=16;
+  // Chandeliers: top not yet made → lock bottom cups visually
+  const topLocked = state && state.isChandeliers && !state.chandeliersTopMade[teamKey];
+  // Island call: highlight called cup with golden ring
+  const islandCupId = state && state.pendingIslandCall && state.pendingIslandCall.teamKey === teamKey
+    ? state.pendingIslandCall.cupId : null;
   let out = `<svg width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}">`;
   for (const {id, cx, cy} of positions) {
     const cup = cups.find(c=>c.id===id);
@@ -1063,8 +1224,18 @@ function buildRackSVG(teamKey, cups, color) {
       out += `<line x1="${cx-9}" y1="${cy-9}" x2="${cx+9}" y2="${cy+9}" stroke="#f85149" stroke-width="3" stroke-linecap="round" pointer-events="none"/>`;
       out += `<line x1="${cx+9}" y1="${cy-9}" x2="${cx-9}" y2="${cy+9}" stroke="#f85149" stroke-width="3" stroke-linecap="round" pointer-events="none"/>`;
     } else {
-      out += `<circle cx="${cx}" cy="${cy}" r="${R}" fill="${color}" fill-opacity="0.85" stroke="${color}" stroke-width="1.5" data-cup-id="${id}" style="cursor:pointer"/>`;
-      out += `<text x="${cx}" y="${cy+5}" text-anchor="middle" font-size="11" font-weight="bold" fill="#000" pointer-events="none">${id}</text>`;
+      const isTop = n===4 && id===4;
+      const isLocked = topLocked && !isTop;
+      const fillOp = isLocked ? '0.35' : '0.85';
+      const strokeColor = isTop && topLocked ? '#ffd700' : color;
+      const strokeW = isTop && topLocked ? '3' : '1.5';
+      const label = isTop && topLocked ? '★' : String(id);
+      out += `<circle cx="${cx}" cy="${cy}" r="${R}" fill="${color}" fill-opacity="${fillOp}" stroke="${strokeColor}" stroke-width="${strokeW}" data-cup-id="${id}" style="cursor:pointer"/>`;
+      out += `<text x="${cx}" y="${cy+5}" text-anchor="middle" font-size="11" font-weight="bold" fill="#000" pointer-events="none">${label}</text>`;
+      // Island call indicator: dashed golden ring
+      if (id === islandCupId) {
+        out += `<circle cx="${cx}" cy="${cy}" r="${R+5}" fill="none" stroke="#ffd700" stroke-width="2.5" stroke-dasharray="5 3" pointer-events="none"/>`;
+      }
     }
   }
   out += '</svg>';
