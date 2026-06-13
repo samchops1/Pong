@@ -164,10 +164,10 @@ function initSetupScreen() {
 
 /* ─────────────────────────── CORNER CALIBRATION ─────────────────────────── */
 const CORNER_INSTR = [
-  'Click the <strong>near-left</strong> corner of the table (your side, left)',
-  'Click the <strong>near-right</strong> corner of the table (your side, right)',
-  'Click the <strong>far-left</strong> corner (opposite side, left)',
-  'Click the <strong>far-right</strong> corner (opposite side, right)',
+  'Click the <strong>front-left</strong> corner (near long edge, left end — Team A)',
+  'Click the <strong>front-right</strong> corner (near long edge, right end — Team B)',
+  'Click the <strong>back-left</strong> corner (far long edge, left end)',
+  'Click the <strong>back-right</strong> corner (far long edge, right end)',
   'All 4 corners set! Proceeding to ball calibration…'
 ];
 

@@ -4,32 +4,37 @@
 'use strict';
 
 /* ── Cup layouts in normalized table coordinates ──
-   u=0 left, u=1 right, v=0 near (Team A), v=1 far (Team B) */
+   Side-across camera view: the table LENGTH runs left↔right.
+   u=0 left end (Team A), u=1 right end (Team B);
+   v=0 front long edge (near camera), v=1 back long edge.
+   Each rack is a triangle clustered at its own end: the wide base sits on
+   the end line, and the apex points toward the center of the table.
+   Rows step ~0.035 in u (toward center); cups step ~0.155 in v (across width). */
 const CUP_LAYOUTS = {
   10: {
     teamA: [
-      {id:1,u:0.219,v:0.153},{id:2,u:0.406,v:0.153},{id:3,u:0.594,v:0.153},{id:4,u:0.781,v:0.153},
-      {id:5,u:0.313,v:0.112},{id:6,u:0.500,v:0.112},{id:7,u:0.688,v:0.112},
-      {id:8,u:0.406,v:0.072},{id:9,u:0.594,v:0.072},
-      {id:10,u:0.500,v:0.031}
+      {id:1,u:0.060,v:0.270},{id:2,u:0.060,v:0.423},{id:3,u:0.060,v:0.577},{id:4,u:0.060,v:0.730},
+      {id:5,u:0.095,v:0.345},{id:6,u:0.095,v:0.500},{id:7,u:0.095,v:0.655},
+      {id:8,u:0.130,v:0.423},{id:9,u:0.130,v:0.577},
+      {id:10,u:0.165,v:0.500}
     ],
     teamB: [
-      {id:1,u:0.219,v:0.847},{id:2,u:0.406,v:0.847},{id:3,u:0.594,v:0.847},{id:4,u:0.781,v:0.847},
-      {id:5,u:0.313,v:0.888},{id:6,u:0.500,v:0.888},{id:7,u:0.688,v:0.888},
-      {id:8,u:0.406,v:0.928},{id:9,u:0.594,v:0.928},
-      {id:10,u:0.500,v:0.969}
+      {id:1,u:0.940,v:0.270},{id:2,u:0.940,v:0.423},{id:3,u:0.940,v:0.577},{id:4,u:0.940,v:0.730},
+      {id:5,u:0.905,v:0.345},{id:6,u:0.905,v:0.500},{id:7,u:0.905,v:0.655},
+      {id:8,u:0.870,v:0.423},{id:9,u:0.870,v:0.577},
+      {id:10,u:0.835,v:0.500}
     ]
   },
   6: {
     teamA: [
-      {id:1,u:0.313,v:0.112},{id:2,u:0.500,v:0.112},{id:3,u:0.688,v:0.112},
-      {id:4,u:0.406,v:0.072},{id:5,u:0.594,v:0.072},
-      {id:6,u:0.500,v:0.031}
+      {id:1,u:0.060,v:0.345},{id:2,u:0.060,v:0.500},{id:3,u:0.060,v:0.655},
+      {id:4,u:0.095,v:0.423},{id:5,u:0.095,v:0.577},
+      {id:6,u:0.130,v:0.500}
     ],
     teamB: [
-      {id:1,u:0.313,v:0.888},{id:2,u:0.500,v:0.888},{id:3,u:0.688,v:0.888},
-      {id:4,u:0.406,v:0.928},{id:5,u:0.594,v:0.928},
-      {id:6,u:0.500,v:0.969}
+      {id:1,u:0.940,v:0.345},{id:2,u:0.940,v:0.500},{id:3,u:0.940,v:0.655},
+      {id:4,u:0.905,v:0.423},{id:5,u:0.905,v:0.577},
+      {id:6,u:0.870,v:0.500}
     ]
   }
 };
@@ -97,7 +102,8 @@ function matchesBall(r, g, b) {
 
 /* Bilinear interpolation: world [u,v] → canvas [x,y] */
 function worldToCanvas(u, v, corners) {
-  // corners: [near-left, near-right, far-left, far-right]
+  // corners: [front-left, front-right, back-left, back-right] (side-across view)
+  // u: 0 = left end (Team A) → 1 = right end (Team B); v: 0 = front edge → 1 = back edge
   const c = corners;
   return {
     x: (1-u)*(1-v)*c[0].x + u*(1-v)*c[1].x + (1-u)*v*c[2].x + u*v*c[3].x,
@@ -212,16 +218,34 @@ function signedLineDist(px, py, p1, p2) {
   return (p2.x-p1.x)*(py-p1.y)-(p2.y-p1.y)*(px-p1.x);
 }
 
+/* Active foul line = the shooting team's END of the table (side-across view).
+   Team A shoots from the LEFT end, Team B from the RIGHT end. */
+function activeFoulLine(shootingTeam) {
+  if (!calibration) return null;
+  return shootingTeam === 'B' ? calibration.foulLineB : calibration.foulLineA;
+}
+
+/* Signed distance from a point to a foul line, normalized so POSITIVE means the
+   point is on the table (center) side of that end line — i.e. the elbow reached
+   over. Using the table center as reference makes the sign robust regardless of
+   corner ordering. */
+function foulSideDist(ex, ey, line) {
+  const raw = signedLineDist(ex, ey, line.p1, line.p2);
+  const ins = signedLineDist(calibration.center.x, calibration.center.y, line.p1, line.p2);
+  return ins >= 0 ? raw : -raw;
+}
+
 /* ── Cup Position Computation ── */
 function computeCupPixelPositions(corners, count, side) {
   const layout = CUP_LAYOUTS[count];
   if (!layout) return [];
   const worldCups = layout[side];
-  // Estimate cup radius from table pixel width
-  const nearW = Math.hypot(corners[1].x-corners[0].x, corners[1].y-corners[0].y);
-  const farW  = Math.hypot(corners[3].x-corners[2].x, corners[3].y-corners[2].y);
-  const avgW  = (nearW+farW)/2;
-  const r = Math.max(14, Math.min(35, avgW * 0.045));
+  // Estimate cup radius from the table's SHORT (depth) dimension —
+  // the left/right end edges in the side-across view (v axis extent).
+  const leftLen  = Math.hypot(corners[2].x-corners[0].x, corners[2].y-corners[0].y);
+  const rightLen = Math.hypot(corners[3].x-corners[1].x, corners[3].y-corners[1].y);
+  const avgW = (leftLen+rightLen)/2;
+  const r = Math.max(10, Math.min(36, avgW * 0.08));
   return worldCups.map(cup => {
     const px = worldToCanvas(cup.u, cup.v, corners);
     return { id: cup.id, x: px.x, y: px.y, r };
@@ -449,8 +473,8 @@ function processCV(now) {
 
 function drawOverlays(now) {
   if (!calibration) return;
-  const fl = calibration.foulLine;
-  const ff = calibration.farLine;
+  const gsDraw = getGameState ? getGameState() : null;
+  const fl = (gsDraw && activeFoulLine(gsDraw.shootingTeam)) || calibration.foulLine;
 
   // Foul line
   ctx.save();
@@ -581,16 +605,17 @@ function checkElbowFoul(landmarks) {
   if (!gs) return;
 
   const w = canvas.width, h = canvas.height;
+  const fl = activeFoulLine(gs.shootingTeam);
+  if (!fl) return;
   // Check both arms
   for (const [elbIdx, wristIdx] of [[13,15],[14,16]]) {
     const elbow = landmarks[elbIdx], wrist = landmarks[wristIdx];
     if (!elbow||!wrist||(elbow.visibility||0)<0.4||(wrist.visibility||0)<0.4) continue;
     const ex = elbow.x*w, ey = elbow.y*h;
-    // Wrist moving forward past elbow with velocity
+    // Elbow reached over the shooter's end line past the grace margin
     const wvy = (wrist.y - elbow.y)*h;
     if (Math.abs(wvy) > 0.02) {
-      const fl = calibration.foulLine;
-      const side = signedLineDist(ex, ey, fl.p1, fl.p2);
+      const side = foulSideDist(ex, ey, fl);
       if (side > FOUL_GRACE_PX) {
         lastFoulTime = performance.now();
         foulFlashUntil = performance.now() + 3000;
@@ -669,15 +694,21 @@ window.Vision = {
   },
 
   setCalibration(corners, tableFt) {
-    const leftLen  = Math.hypot(corners[2].x-corners[0].x, corners[2].y-corners[0].y);
-    const rightLen = Math.hypot(corners[3].x-corners[1].x, corners[3].y-corners[1].y);
-    const pixPerFt = ((leftLen+rightLen)/2) / Math.max(1, tableFt);
+    // Side-across view: table LENGTH (tableFt) runs along the front/back long edges.
+    const frontLen = Math.hypot(corners[1].x-corners[0].x, corners[1].y-corners[0].y);
+    const backLen  = Math.hypot(corners[3].x-corners[2].x, corners[3].y-corners[2].y);
+    const pixPerFt = ((frontLen+backLen)/2) / Math.max(1, tableFt);
     const roiPoly = [corners[0],corners[1],corners[3],corners[2]];
     const bounds = polyBounds(roiPoly);
+    const center = worldToCanvas(0.5, 0.5, corners);
     calibration = {
-      corners, tableFt, pixPerFt,
-      foulLine: { p1:corners[0], p2:corners[1] },
-      farLine:  { p1:corners[2], p2:corners[3] },
+      corners, tableFt, pixPerFt, center,
+      // Foul line = shooter's END of the table (side-across view):
+      // Team A on the LEFT end, Team B on the RIGHT end.
+      foulLineA: { p1:corners[0], p2:corners[2] },  // left end
+      foulLineB: { p1:corners[1], p2:corners[3] },  // right end
+      foulLine:  { p1:corners[0], p2:corners[2] },  // default (Team A / left)
+      farLine:   { p1:corners[2], p2:corners[3] },
       roiPoly, bounds
     };
     return calibration;
