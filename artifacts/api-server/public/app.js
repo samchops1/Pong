@@ -438,6 +438,7 @@ async function startGame() {
     Vision.startTracking({
       onThrowStart, onSpeed, onMakeDetected, onFoulDetected
     }, getGameState);
+    HandGesture.start(video); // Island call: 4-finger palm-toward-camera gesture
   }
 
   wireGameButtons();
@@ -470,7 +471,7 @@ function wireGameButtons() {
   };
 
   document.getElementById('btn-recalibrate').onclick = () => {
-    Vision.stopTracking(); Vision.stopCamera();
+    Vision.stopTracking(); Vision.stopCamera(); HandGesture.stop();
     startCalCorners();
   };
 
@@ -1060,6 +1061,44 @@ function checkIslandReminder() {
   banner._t = setTimeout(() => banner.classList.add('hidden'), 10000);
 }
 
+/* ── Hand gesture callback: island call ── */
+function onIslandGesture() {
+  if (!state) return;
+  if (state.isChandeliers) return;    // no island in chandeliers overtime
+  if (state.isRebuttal)    return;    // no island during rebuttal
+  const shooter = shooterName();
+  if ((state.islandCallsUsed||{})[shooter]) return; // already used this game
+  const t      = state.shootingTeam;
+  const oppKey = t === 'A' ? 'teamB' : 'teamA';
+  if (!hasLoneCup(oppKey)) return;    // no lone cup to call on
+  const loneCupId = findLoneCupId(oppKey);
+  if (!loneCupId) return;
+  // Register the island call
+  state.islandCallsUsed = state.islandCallsUsed || {};
+  state.islandCallsUsed[shooter] = true;
+  state.pendingIslandCall = { player: shooter, cupId: loneCupId, teamKey: oppKey };
+  addEvent(`🏝 ${shooter} calls ISLAND on Cup ${loneCupId}! (gesture)`, 'island');
+  Commentary.fire('island_call', { player: shooter });
+  const banner = document.getElementById('island-banner');
+  if (banner) banner.classList.add('hidden');
+  showGestureToast(`🏝 Island! Cup ${loneCupId}`);
+  renderRacks(); saveState();
+}
+
+function showGestureToast(msg) {
+  let toast = document.getElementById('gesture-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'gesture-toast';
+    toast.className = 'gesture-toast';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.classList.add('visible');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => toast.classList.remove('visible'), 2500);
+}
+
 /* ── Uncertain prompt ── */
 function showUncertainPrompt(teamKey, cupId) {
   const teamLetter = teamKey==='teamA'?'A':'B';
@@ -1432,6 +1471,7 @@ async function shareStats(winner, loser) {
 }
 
 function showWinScreen(winner, loser) {
+  HandGesture.stop();
   showScreen('screen-win');
   const winnerName = teamDisplayName(winner);
   document.getElementById('win-title').textContent = winnerName + ' Wins! 🎉';

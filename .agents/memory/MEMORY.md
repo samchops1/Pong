@@ -1,0 +1,1 @@
+- [HandGesture architecture](hand-gesture-arch.md) — island call uses separate hands.js module polling at 15fps; palm-facing via cross product; 20-frame hold debounce

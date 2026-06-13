@@ -401,6 +401,16 @@ input[type="number"] { max-width: 200px; }
   to   { transform: translateX(-50%) scale(1.05); box-shadow: 0 6px 28px rgba(188,140,255,0.75); }
 }
 
+/* ── Hand-gesture island toast ── */
+.gesture-toast {
+  position: fixed; bottom: 130px; left: 50%; transform: translateX(-50%) translateY(24px);
+  background: rgba(22,163,74,0.97); color: #fff; font-size: 1.35rem; font-weight: 800;
+  padding: 14px 30px; border-radius: 18px; z-index: 60;
+  opacity: 0; transition: opacity 0.3s ease, transform 0.3s ease;
+  pointer-events: none; white-space: nowrap; box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+}
+.gesture-toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+
 /* ── Chandeliers banner ── */
 .chandeliers-banner {
   position: fixed; top: 0; left: 0; right: 0; z-index: 35;
