@@ -49,6 +49,8 @@ let throwBuffer = [];     // positions during active throw
 let throwActive = false;
 let postThrowBuffer = null;  // {positions, disappearFrames} for cup detection
 let ballDisappearFrames = 0;
+let lastBallSeenAt = 0;    // ms timestamp of most recent ball detection
+let lastBallPos = null;    // {x,y} of most recent ball detection
 let lastArcPoints = [];
 let arcFade = 0.4;
 let poseDetector = null;
@@ -299,6 +301,8 @@ function onBallDetected(pos) {
     postThrowBuffer = null;
   }
   ballDisappearFrames = 0;
+  lastBallSeenAt = pos.t;
+  lastBallPos = { x: pos.x, y: pos.y };
 
   // Compute velocity
   let vx=0, vy=0;
@@ -317,8 +321,10 @@ function onBallDetected(pos) {
     const speed = Math.hypot(vx, vy);
     if (speed > 0.25 && ballPositions.length >= THROW_MIN_FRAMES) {
       const recent = ballPositions.slice(-THROW_MIN_FRAMES);
-      const sustained = recent.every(q => Math.hypot(q.vx, q.vy) > 0.08);
-      if (sustained) {
+      // Tolerate one dropped/slow frame so a brief detection gap doesn't
+      // prevent a real throw from registering.
+      const moving = recent.filter(q => Math.hypot(q.vx, q.vy) > 0.08).length;
+      if (moving >= THROW_MIN_FRAMES - 1) {
         throwActive = true;
         throwBuffer = recent.map(q => ({...q}));
         if (throwCbs.onThrowStart) throwCbs.onThrowStart();
@@ -346,8 +352,8 @@ function onBallMissing(now) {
     const lastT = throwBuffer.length ? throwBuffer[throwBuffer.length-1].t : now;
     if (now - lastT > 1500 || throwBuffer.length < 1) {
       endThrow();
-    } else if (ballDisappearFrames >= 2) {
-      // Ball disappeared during throw → end throw immediately
+    } else if (ballDisappearFrames >= 4) {
+      // Ball gone for several frames during throw → end it (tolerates brief gaps)
       endThrow();
     }
     return;
@@ -512,6 +518,54 @@ function drawOverlays(now) {
     ctx.restore();
   }
   if (!throwActive) arcFade = Math.max(0.25, arcFade - 0.004);
+
+  // ── Live ball trail (continuous, independent of throw detection) ──
+  if (!throwActive && ballPositions.length >= 2) {
+    ctx.save();
+    ctx.lineCap = 'round';
+    const start = Math.max(1, ballPositions.length - 14);
+    for (let i = start; i < ballPositions.length; i++) {
+      const a = ballPositions[i-1], b = ballPositions[i];
+      if (b.t - a.t > 200) continue;   // skip stale gaps between detections
+      if (now - b.t > 700) continue;   // only recent segments
+      const recency = 1 - (now - b.t) / 700;
+      ctx.strokeStyle = `rgba(120,220,255,${0.15 + 0.45*recency})`;
+      ctx.lineWidth = 2 + 3*recency;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ── Live ball marker (only while the ball is actively detected) ──
+  const ballFresh = lastBallSeenAt > 0 && (now - lastBallSeenAt) < 250;
+  if (ballFresh && lastBallPos) {
+    ctx.save();
+    ctx.shadowColor = 'rgba(120,220,255,0.9)';
+    ctx.shadowBlur = 14;
+    ctx.fillStyle = 'rgba(120,220,255,0.95)';
+    ctx.beginPath(); ctx.arc(lastBallPos.x, lastBallPos.y, 7, 0, Math.PI*2); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(lastBallPos.x, lastBallPos.y, 11, 0, Math.PI*2); ctx.stroke();
+    ctx.restore();
+  }
+
+  // ── Ball-tracking status badge (top-left) ──
+  {
+    const tracking = lastBallSeenAt > 0 && (now - lastBallSeenAt) < 500;
+    const label = tracking ? '\u25CF Tracking ball' : '\u25CB No ball \u2014 re-sample color';
+    ctx.save();
+    ctx.font = '600 14px system-ui, -apple-system, sans-serif';
+    const padX = 10, bh = 26;
+    const bw = ctx.measureText(label).width + padX*2;
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(10, 10, bw, bh);
+    ctx.fillStyle = tracking ? 'rgba(80,230,120,0.95)' : 'rgba(255,120,120,0.95)';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, 10 + padX, 10 + bh/2 + 1);
+    ctx.restore();
+  }
 
   // Cup zone indicators
   if (cupLayout) {
@@ -727,6 +781,10 @@ window.Vision = {
     throwCbs = cbs || {};
     getGameState = gsGetter || null;
     trackingActive = true;
+    // Reset per-game tracking buffers so stale balls/arcs don't carry over.
+    ballPositions = []; throwBuffer = []; throwActive = false;
+    postThrowBuffer = null; lastArcPoints = [];
+    ballDisappearFrames = 0; lastBallSeenAt = 0; lastBallPos = null;
     initPose();
     if (animId) cancelAnimationFrame(animId);
     animId = requestAnimationFrame(trackLoop);

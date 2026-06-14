@@ -220,6 +220,13 @@ input[type="number"] { max-width: 200px; }
   font-size: 1.4rem; font-weight: 900; color: var(--team-a);
   pointer-events: none; display: none;
 }
+.speed-overlay.is-record { color: #ffd23f; }
+.speed-overlay .speed-unit { font-size: 0.85rem; font-weight: 700; opacity: 0.8; }
+.speed-overlay .speed-pb {
+  font-size: 0.7rem; font-weight: 900; color: #0d1117;
+  background: #ffd23f; border-radius: 5px; padding: 1px 6px; margin-left: 4px;
+  vertical-align: middle;
+}
 .pose-warning {
   position: absolute; bottom: 8px; left: 8px;
   background: rgba(210,153,34,0.9); color: #000; font-size: 0.75rem; font-weight: 700;

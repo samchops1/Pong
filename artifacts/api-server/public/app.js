@@ -500,17 +500,23 @@ function onSpeed(mph) {
   const t = state.shootingTeam;
   const shooter = shooterName();
   ensureStats(shooter);
-  if (mph > (state.fastest[t] || 0)) {
+  const isRecord = mph > (state.fastest[t] || 0);
+  if (isRecord) {
     state.fastest[t] = mph;
     state.playerStats[shooter].fastest = Math.max(state.playerStats[shooter].fastest, mph);
-    const overlay = document.getElementById('speed-overlay');
-    if (overlay) {
-      overlay.textContent = mph.toFixed(1)+' mph';
-      overlay.style.display = 'block';
-      clearTimeout(overlay._t);
-      overlay._t = setTimeout(() => { overlay.style.display='none'; }, 4000);
-    }
-    updateTeamPanels();
+  }
+  // Show speed for EVERY throw, not just new records.
+  const overlay = document.getElementById('speed-overlay');
+  if (overlay) {
+    overlay.innerHTML = `${mph.toFixed(1)} <span class="speed-unit">mph</span>` +
+      (isRecord ? ` <span class="speed-pb">PB</span>` : '');
+    overlay.classList.toggle('is-record', isRecord);
+    overlay.style.display = 'block';
+    clearTimeout(overlay._t);
+    overlay._t = setTimeout(() => { overlay.style.display='none'; }, 5000);
+  }
+  updateTeamPanels();
+  if (isRecord) {
     Commentary.fire('speed', { player:shooter, speed:mph,
       defending:`Team ${t==='A'?'B':'A'}` });
   }

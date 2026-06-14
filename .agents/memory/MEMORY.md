@@ -1,2 +1,3 @@
 - [HandGesture architecture](hand-gesture-arch.md) — island call uses separate hands.js module polling at 15fps; palm-facing via cross product; 20-frame hold debounce
 - [Vision coordinate system](vision-coordinates.md) — Pong Ref CV assumes a SIDE-ACROSS camera; u=length(left/right, racks split here), v=width(front/back); corner order is load-bearing
+- [Ball tracking & feedback](ball-tracking-feedback.md) — trajectory/speed depend on fragile HSV ball detection; "No ball" badge diagnoses it; throw state machine is gap-tolerant
