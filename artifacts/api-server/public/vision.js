@@ -44,6 +44,8 @@ let video, canvas, ctx;
 let calibration = null;
 let ballHSV = null;
 let cupLayout = null;
+// Manual fine-tune of the projected cup template (corrects camera perspective).
+let cupAdjust = { teamA: {dx:0, dy:0}, teamB: {dx:0, dy:0}, scale: 1, radiusMul: 1 };
 let ballPositions = [];   // rolling 30-frame buffer
 let throwBuffer = [];     // positions during active throw
 let throwActive = false;
@@ -65,7 +67,8 @@ let throwCbs = {};
 let getGameState = null;
 let lastSpeed = 0;
 let frameCount = 0;
-let skipCV = 0;
+let cvCanvas = null, cvCtx = null, cvScale = 1;  // downscaled offscreen buffer for CV
+let poseInFlight = false;
 let maskPreviewActive = false;
 let maskPreviewCanvas = null;
 let maskPreviewCtx = null;
@@ -74,8 +77,9 @@ let hsvTol = { hue: 16, sat: 40, valFloor: 70 };
 
 const BALL_MIN_PX = 4;
 const BALL_MAX_PX = 500;
-const THROW_MIN_FRAMES = 4;
-const POSE_INTERVAL_MS = 67;
+const THROW_MIN_FRAMES = 3;
+const POSE_INTERVAL_MS = 150;
+const CV_MAX_WIDTH = 640;   // ball detection runs on a buffer no wider than this
 const DISAPPEAR_FOR_MAKE = 8;
 const FOUL_DEBOUNCE_MS = 3000;
 const FOUL_GRACE_PX = 12;
@@ -162,27 +166,37 @@ function findLargestBlob(mask, w, h) {
   return best;
 }
 
-/* Build HSV mask for tracking region (every 2nd pixel for speed) */
-function buildAndFindBall(imageData, bounds) {
-  const { data, width } = imageData;
-  const STEP = 2;
-  const x0 = Math.max(0, Math.floor(bounds.minX));
-  const y0 = Math.max(0, Math.floor(bounds.minY));
-  const x1 = Math.min(width-1, Math.ceil(bounds.maxX));
-  const y1 = Math.min(imageData.height-1, Math.ceil(bounds.maxY));
-  const bw = Math.ceil((x1-x0)/STEP)+1;
-  const bh = Math.ceil((y1-y0)/STEP)+1;
-  const mask = new Uint8Array(bw * bh);
-  let mi = 0;
-  for (let y=y0; y<=y1; y+=STEP) {
-    for (let x=x0; x<=x1; x+=STEP) {
-      const pi = (y*width+x)*4;
-      mask[mi++] = matchesBall(data[pi], data[pi+1], data[pi+2]) ? 1 : 0;
-    }
+/* Lazily (re)size the offscreen CV buffer to a downscaled copy of the display
+   canvas. Ball detection runs here so a fast ball is found cheaply enough to
+   process EVERY frame. cvScale = cvWidth / displayWidth (<= 1). */
+function ensureCvCanvas() {
+  const fullW = canvas.width || 640, fullH = canvas.height || 480;
+  const scale = Math.min(1, CV_MAX_WIDTH / fullW);
+  const cw = Math.max(1, Math.round(fullW * scale));
+  const ch = Math.max(1, Math.round(fullH * scale));
+  if (!cvCanvas) {
+    cvCanvas = document.createElement('canvas');
+    cvCtx = cvCanvas.getContext('2d', { willReadFrequently: true });
   }
-  const blob = findLargestBlob(mask, bw, bh);
+  if (cvCanvas.width !== cw || cvCanvas.height !== ch) {
+    cvCanvas.width = cw; cvCanvas.height = ch;
+  }
+  cvScale = cw / fullW;
+}
+
+/* Find the ball blob inside an ROI ImageData (full-resolution per-pixel scan,
+   STEP=1 — the buffer is already downscaled). Returns center in ROI-local
+   coordinates, or null. */
+function findBallInRoi(imageData) {
+  const { data, width, height } = imageData;
+  const mask = new Uint8Array(width * height);
+  for (let i = 0; i < mask.length; i++) {
+    const pi = i * 4;
+    mask[i] = matchesBall(data[pi], data[pi+1], data[pi+2]) ? 1 : 0;
+  }
+  const blob = findLargestBlob(mask, width, height);
   if (!blob) return null;
-  return { x: blob.cx*STEP+x0, y: blob.cy*STEP+y0, cnt: blob.cnt*4 };
+  return { x: blob.cx, y: blob.cy, cnt: blob.cnt };
 }
 
 /* Least-squares parabola fit: y = a*x^2 + b*x + c */
@@ -259,11 +273,26 @@ function computeCupPixelPositions(corners, count, side) {
   const leftLen  = Math.hypot(corners[2].x-corners[0].x, corners[2].y-corners[0].y);
   const rightLen = Math.hypot(corners[3].x-corners[1].x, corners[3].y-corners[1].y);
   const avgW = (leftLen+rightLen)/2;
-  const r = Math.max(10, Math.min(36, avgW * 0.08));
-  return worldCups.map(cup => {
+  const r = Math.max(8, Math.min(60, avgW * 0.08 * (cupAdjust.radiusMul || 1)));
+
+  // Project the template, then apply the user's manual fine-tune: scale the rack
+  // about its own centroid (spread) and shift it (drag), per team. This corrects
+  // for camera perspective the flat bilinear projection cannot capture.
+  const adj = cupAdjust[side] || { dx: 0, dy: 0 };
+  const sc = cupAdjust.scale || 1;
+  const proj = worldCups.map(cup => {
     const px = worldToCanvas(cup.u, cup.v, corners);
-    return { id: cup.id, x: px.x, y: px.y, r };
+    return { id: cup.id, x: px.x, y: px.y };
   });
+  let cx = 0, cy = 0;
+  for (const p of proj) { cx += p.x; cy += p.y; }
+  cx /= proj.length || 1; cy /= proj.length || 1;
+  return proj.map(p => ({
+    id: p.id,
+    x: cx + (p.x - cx) * sc + adj.dx,
+    y: cy + (p.y - cy) * sc + adj.dy,
+    r
+  }));
 }
 
 /* ── Auto Cup Detection ── */
@@ -276,7 +305,13 @@ function checkCupMake(positions, disappearFrames, shootingTeam, activeCupIds) {
   const defendCups = cupLayout[defending];
   if (!defendCups || !defendCups.length) return null;
 
-  const last = positions[positions.length - 1];
+  // Prefer the last REAL detection (skip extrapolated occlusion-bridge points)
+  // when choosing which cup the ball landed in.
+  let last = null;
+  for (let i = positions.length - 1; i >= 0; i--) {
+    if (!positions[i].predicted) { last = positions[i]; break; }
+  }
+  if (!last) last = positions[positions.length - 1];
 
   // Velocity drop: compare last 2 vs earlier 2 frames
   let earlySpeed = 0, lateSpeed = 0;
@@ -360,12 +395,23 @@ function onBallMissing(now) {
   ballDisappearFrames++;
 
   if (throwActive) {
-    // Check 1.5s timeout
-    const lastT = throwBuffer.length ? throwBuffer[throwBuffer.length-1].t : now;
-    if (now - lastT > 1500 || throwBuffer.length < 1) {
-      endThrow();
-    } else if (ballDisappearFrames >= 4) {
-      // Ball gone for several frames during throw → end it (tolerates brief gaps)
+    // Last buffered point — may itself be a bridge-predicted point when an
+    // occlusion spans several frames (constant-velocity chaining).
+    const lastPt = throwBuffer.length ? throwBuffer[throwBuffer.length-1] : null;
+    const lastT = lastPt ? lastPt.t : now;
+    if (now - lastT > 1500 || !lastPt) { endThrow(); return; }
+    // Bridge a brief occlusion (e.g. the ball passing behind the throwing hand)
+    // by extrapolating at the last known velocity, so a fast shot keeps its arc
+    // and its make instead of being cut short. Only while it's clearly moving.
+    const speed = Math.hypot(lastPt.vx || 0, lastPt.vy || 0);
+    if (ballDisappearFrames <= 3 && speed > 0.15) {
+      const dt = 16;
+      throwBuffer.push({
+        x: lastPt.x + lastPt.vx * dt,
+        y: lastPt.y + lastPt.vy * dt,
+        t: now, vx: lastPt.vx, vy: lastPt.vy, predicted: true
+      });
+    } else if (ballDisappearFrames >= 6) {
       endThrow();
     }
     return;
@@ -440,19 +486,14 @@ async function trackLoop(now) {
 
   if (!video || !video.videoWidth) return;
 
-  // Draw video frame
+  // Draw video frame to the display canvas (overlays draw on top)
   try {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   } catch(e) { return; }
 
-  // CV processing (skip frames if falling behind)
-  if (skipCV > 0) { skipCV--; }
-  else {
-    const t0 = performance.now();
-    processCV(now);
-    const dt = performance.now()-t0;
-    if (dt > 30) skipCV = Math.min(3, Math.floor(dt/30));
-  }
+  // Ball CV runs EVERY frame — the downscaled buffer keeps it cheap so a fast
+  // ball is never dropped to "catch up".
+  processCV(now);
 
   // Mask preview (calibration screen)
   if (maskPreviewActive && maskPreviewCanvas && ballHSV) {
@@ -465,25 +506,38 @@ async function trackLoop(now) {
 }
 
 function processCV(now) {
-  let imgData;
-  try { imgData = ctx.getImageData(0,0,canvas.width,canvas.height); }
+  ensureCvCanvas();
+  // One downscaled draw of the current frame, shared by ball + pose.
+  try { cvCtx.drawImage(video, 0, 0, cvCanvas.width, cvCanvas.height); }
   catch(e) { return; }
+  const s = cvScale;
 
-  // Ball tracking
+  // Ball tracking — read only the table ROI (plus headroom) from the buffer.
   if (calibration && ballHSV) {
     const { bounds } = calibration;
-    const trackBounds = {
-      minX: bounds.minX, maxX: bounds.maxX,
-      minY: Math.max(0, bounds.minY - 100),
-      maxY: bounds.maxY
-    };
-    const blob = buildAndFindBall(imgData, trackBounds);
-    if (blob) onBallDetected({ x: blob.x, y: blob.y, t: now });
-    else onBallMissing(now);
+    const dMinX = bounds.minX, dMaxX = bounds.maxX;
+    const dMinY = Math.max(0, bounds.minY - 100), dMaxY = bounds.maxY;
+    const rx = Math.max(0, Math.floor(dMinX * s));
+    const ry = Math.max(0, Math.floor(dMinY * s));
+    const rw = Math.min(cvCanvas.width  - rx, Math.ceil((dMaxX - dMinX) * s) + 1);
+    const rh = Math.min(cvCanvas.height - ry, Math.ceil((dMaxY - dMinY) * s) + 1);
+    let found = false;
+    if (rw > 0 && rh > 0) {
+      try {
+        const roi = cvCtx.getImageData(rx, ry, rw, rh);
+        const blob = findBallInRoi(roi);
+        if (blob) {
+          // ROI-local cv coords → full cv coords → display coords
+          onBallDetected({ x: (rx + blob.x) / s, y: (ry + blob.y) / s, t: now });
+          found = true;
+        }
+      } catch(e) { /* getImageData can throw on a tainted canvas */ }
+    }
+    if (!found) onBallMissing(now);
   }
 
-  // Pose at ~15fps
-  if (now - lastPoseTime >= POSE_INTERVAL_MS) {
+  // Pose throttled and never concurrent (foul detection tolerates lower fps).
+  if (now - lastPoseTime >= POSE_INTERVAL_MS && !poseInFlight) {
     lastPoseTime = now;
     runPose();
   }
@@ -658,9 +712,11 @@ function initPose() {
 }
 
 async function runPose() {
-  if (!poseDetector) return;
-  try { await poseDetector.send({ image: canvas }); }
+  if (!poseDetector || poseInFlight) return;
+  poseInFlight = true;
+  try { await poseDetector.send({ image: cvCanvas || canvas }); }
   catch(e) { /* suppress */ }
+  finally { poseInFlight = false; }
 }
 
 function checkElbowFoul(landmarks) {
@@ -798,6 +854,24 @@ window.Vision = {
     };
     return cupLayout;
   },
+
+  get cupAdjust() { return cupAdjust; },
+  setCupAdjust(a) {
+    if (!a) return;
+    cupAdjust = {
+      teamA: { dx: 0, dy: 0, ...(a.teamA || cupAdjust.teamA) },
+      teamB: { dx: 0, dy: 0, ...(a.teamB || cupAdjust.teamB) },
+      scale: a.scale != null ? a.scale : cupAdjust.scale,
+      radiusMul: a.radiusMul != null ? a.radiusMul : cupAdjust.radiusMul
+    };
+  },
+  nudgeCupRack(side, dx, dy) {
+    if (side !== 'teamA' && side !== 'teamB') return;
+    cupAdjust[side].dx += dx; cupAdjust[side].dy += dy;
+  },
+  setCupSpread(scale)  { cupAdjust.scale = Math.max(0.7, Math.min(1.4, scale)); },
+  setCupRadiusMul(m)   { cupAdjust.radiusMul = Math.max(0.8, Math.min(1.8, m)); },
+  resetCupAdjust()     { cupAdjust = { teamA:{dx:0,dy:0}, teamB:{dx:0,dy:0}, scale:1, radiusMul:1 }; },
 
   startTracking(cbs, gsGetter) {
     throwCbs = cbs || {};

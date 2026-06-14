@@ -28,6 +28,8 @@ let calPreviewActive = false;
 let ballPreviewActive = false;
 let ballSampled = false;
 let pendingMask = false;
+let cupAdjustMode = false;
+let cupDrag = null;
 let confettiRaf = null;
 const SAVE_KEY = 'pongref_v5';
 const HISTORY_KEY = 'pongref_history_v1';
@@ -146,6 +148,7 @@ function initSetupScreen() {
         if (cv.calCorners && cv.calCorners.length === 4) calCorners = cv.calCorners;
         if (cv.ballHSV) Vision.ballHSV = cv.ballHSV;
         if (cv.hsvTol) Vision.setHsvTol(cv.hsvTol);
+        if (cv.cupAdjust) Vision.setCupAdjust(cv.cupAdjust);
         window._cfg = window._cfg || {
           tableFt: state.tableFt, cupCount: state.cupCount,
           mode: state.mode, ballsBack: state.ballsBack, strictFoul: state.strictFoul,
@@ -173,6 +176,10 @@ const CORNER_INSTR = [
 
 async function startCalCorners() {
   calCorners = []; cornerStep = 0;
+  cupAdjustMode = false; cupDrag = null;
+  Vision.resetCupAdjust();
+  const adjCtrl = document.getElementById('cup-adjust-controls');
+  if (adjCtrl) adjCtrl.classList.add('hidden');
   showScreen('screen-calibrate-corners');
   updateCornerUI();
 
@@ -204,7 +211,11 @@ async function startCalCorners() {
 
   canvas.addEventListener('click', onCornerClick);
   document.getElementById('btn-redo-corners').onclick = () => {
-    calCorners = []; cornerStep = 0; updateCornerUI();
+    calCorners = []; cornerStep = 0;
+    exitCupAdjust();
+    Vision.resetCupAdjust();
+    canvas.addEventListener('click', onCornerClick);
+    updateCornerUI();
   };
 }
 
@@ -284,12 +295,79 @@ function onCornerClick(e) {
   updateCornerUI();
   if (cornerStep === 4) {
     Vision.setCalibration(calCorners, window._cfg.tableFt||8);
-    setTimeout(proceedToBallCal, 1000);
+    enterCupAdjust();
   }
 }
 
+/* After the 4 corners are set, let the user drag each team's cup ring onto the
+   real cups and tweak spread/size — the flat projection can't fully model the
+   camera's oblique perspective, so a quick manual nudge keeps cups aligned. */
+function enterCupAdjust() {
+  cupAdjustMode = true; cupDrag = null;
+  const canvas = document.getElementById('cal-canvas');
+  canvas.removeEventListener('click', onCornerClick);
+  document.getElementById('corner-instruction').innerHTML =
+    'Drag each team\u2019s ring of cups onto the real cups. Use the sliders to fine-tune, then Continue.';
+  const controls = document.getElementById('cup-adjust-controls');
+  if (controls) controls.classList.remove('hidden');
+  const adj = Vision.cupAdjust || {};
+  const spread = document.getElementById('cup-spread');
+  const radius = document.getElementById('cup-radius');
+  if (spread) { spread.value = adj.scale != null ? adj.scale : 1; spread.oninput = () => Vision.setCupSpread(parseFloat(spread.value)); }
+  if (radius) { radius.value = adj.radiusMul != null ? adj.radiusMul : 1; radius.oninput = () => Vision.setCupRadiusMul(parseFloat(radius.value)); }
+  canvas.addEventListener('pointerdown', onCupPointerDown);
+  canvas.addEventListener('pointermove', onCupPointerMove);
+  window.addEventListener('pointerup', onCupPointerUp);
+  document.getElementById('btn-cups-continue').onclick = proceedToBallCal;
+}
+
+function exitCupAdjust() {
+  cupAdjustMode = false; cupDrag = null;
+  const canvas = document.getElementById('cal-canvas');
+  canvas.removeEventListener('pointerdown', onCupPointerDown);
+  canvas.removeEventListener('pointermove', onCupPointerMove);
+  window.removeEventListener('pointerup', onCupPointerUp);
+  const controls = document.getElementById('cup-adjust-controls');
+  if (controls) controls.classList.add('hidden');
+}
+
+/* Pick the team whose rack centroid is nearest the pointer. */
+function nearestRackSide(pt) {
+  const cfg = window._cfg || {};
+  const layout = Vision.setCupLayout(cfg.cupCount) || {};
+  let best = 'teamA', bestD = Infinity;
+  for (const side of ['teamA','teamB']) {
+    const cups = layout[side] || [];
+    if (!cups.length) continue;
+    let cx=0, cy=0;
+    for (const c of cups) { cx+=c.x; cy+=c.y; }
+    cx/=cups.length; cy/=cups.length;
+    const d = Math.hypot(pt.x-cx, pt.y-cy);
+    if (d < bestD) { bestD = d; best = side; }
+  }
+  return best;
+}
+
+function onCupPointerDown(e) {
+  if (!cupAdjustMode) return;
+  const canvas = document.getElementById('cal-canvas');
+  const pt = canvasCoords(canvas, e);
+  cupDrag = { side: nearestRackSide(pt), x: pt.x, y: pt.y };
+}
+
+function onCupPointerMove(e) {
+  if (!cupAdjustMode || !cupDrag) return;
+  const canvas = document.getElementById('cal-canvas');
+  const pt = canvasCoords(canvas, e);
+  Vision.nudgeCupRack(cupDrag.side, pt.x - cupDrag.x, pt.y - cupDrag.y);
+  cupDrag.x = pt.x; cupDrag.y = pt.y;
+}
+
+function onCupPointerUp() { cupDrag = null; }
+
 function proceedToBallCal() {
   calPreviewActive = false;
+  exitCupAdjust();
   document.getElementById('cal-canvas').removeEventListener('click', onCornerClick);
   Vision.stopCamera();
   startBallCal();
@@ -1553,7 +1631,8 @@ function saveState() {
     const cvState = {
       calCorners: calCorners.length === 4 ? calCorners : null,
       ballHSV: Vision.ballHSV || null,
-      hsvTol: {...Vision.hsvTol}
+      hsvTol: {...Vision.hsvTol},
+      cupAdjust: Vision.cupAdjust ? JSON.parse(JSON.stringify(Vision.cupAdjust)) : null
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify({ gameState, cvState }));
   } catch(e) {}
