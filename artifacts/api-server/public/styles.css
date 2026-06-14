@@ -127,6 +127,7 @@ input[type="number"] { max-width: 200px; }
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
 }
 .hsv-info { font-size: 0.85rem; color: var(--text2); flex: 1; }
+.hsv-info.warn { color: #ffd23f; font-weight: 700; }
 
 .sample-dot {
   position: absolute; width: 30px; height: 30px; border-radius: 50%;

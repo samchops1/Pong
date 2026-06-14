@@ -70,7 +70,7 @@ let maskPreviewActive = false;
 let maskPreviewCanvas = null;
 let maskPreviewCtx = null;
 
-let hsvTol = { hue: 18, sat: 60, valFloor: 80 };
+let hsvTol = { hue: 16, sat: 40, valFloor: 70 };
 
 const BALL_MIN_PX = 4;
 const BALL_MAX_PX = 500;
@@ -98,8 +98,20 @@ function matchesBall(r, g, b) {
   if (!ballHSV) return false;
   const { h, s, v } = rgbToHsv(r, g, b);
   if (v < hsvTol.valFloor) return false;
+  // White / very light ball: hue is unreliable at low saturation, so match on
+  // low saturation + brightness only. (A white ball on a white table/wall is
+  // inherently hard to isolate — a colored ball tracks far better.)
+  if (ballHSV.sat < 22) {
+    return s <= ballHSV.sat + hsvTol.sat;
+  }
+  // Colored ball: hue must be close AND the pixel must be at least roughly as
+  // saturated as the sample (one-sided floor). This rejects washed-out walls,
+  // table, and skin that happen to share the ball's hue but are desaturated.
   const dh = Math.min(Math.abs(h - ballHSV.hue), 360 - Math.abs(h - ballHSV.hue));
-  return dh <= hsvTol.hue && Math.abs(s - ballHSV.sat) <= hsvTol.sat;
+  if (dh > hsvTol.hue) return false;
+  // Clamp the floor with a small absolute minimum so a weakly-colored sample
+  // can't admit broad swaths of desaturated background.
+  return s >= Math.max(25, ballHSV.sat - hsvTol.sat);
 }
 
 /* Bilinear interpolation: world [u,v] → canvas [x,y] */
@@ -731,18 +743,28 @@ window.Vision = {
   sampleBallColor(x, y) {
     try {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const size=15, half=7;
+      const size=13, half=6;
       const sx=Math.max(0,Math.round(x)-half), sy=Math.max(0,Math.round(y)-half);
       const id = ctx.getImageData(sx,sy,size,size);
       const d = id.data;
-      const hs=[], ss=[], vs=[];
+      const all=[], colored=[];
       for (let i=0;i<d.length;i+=4) {
-        const {h,s,v}=rgbToHsv(d[i],d[i+1],d[i+2]);
-        hs.push(h); ss.push(s); vs.push(v);
+        const px = rgbToHsv(d[i],d[i+1],d[i+2]);
+        all.push(px);
+        if (px.s >= 35 && px.v >= 30) colored.push(px);
       }
-      hs.sort((a,b)=>a-b); ss.sort((a,b)=>a-b); vs.sort((a,b)=>a-b);
-      const mid = (hs.length/2)|0;
-      ballHSV = { hue: hs[mid], sat: ss[mid], val: vs[mid] };
+      if (!all.length) return null;
+      // Prefer the saturated pixels (the actual colored ball) when a decent
+      // fraction of the patch is colored. This stops a small orange ball on a
+      // bright white table from being sampled as the white background, which
+      // would drop us into the weak "pale" matcher and match everything.
+      const use = (colored.length >= all.length * 0.25) ? colored : all;
+      const med = vals => { const s = vals.slice().sort((a,b)=>a-b); return s[(s.length/2)|0]; };
+      ballHSV = {
+        hue: med(use.map(p=>p.h)),
+        sat: med(use.map(p=>p.s)),
+        val: med(use.map(p=>p.v))
+      };
       return ballHSV;
     } catch(e) { return null; }
   },
@@ -816,6 +838,7 @@ window.Vision = {
 
   get hsvTol() { return hsvTol; },
   setHsvTol(t) { hsvTol = {...hsvTol, ...t}; },
+  matchesBall(r, g, b) { return matchesBall(r, g, b); },
 
   get ballHSV() { return ballHSV; },
   set ballHSV(v) { ballHSV = v; },

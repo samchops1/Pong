@@ -85,7 +85,7 @@
 <div id="screen-calibrate-ball" class="screen">
   <div class="calibrate-header">
     <h2>Step 2: Sample Ball Color</h2>
-    <p>Click on the ball in the left view to sample its color — the right panel shows matched pixels in green</p>
+    <p>Click on the ball in the left view to sample its color — the right panel shows matched pixels in green. Tip: an orange ball tracks far better than white.</p>
   </div>
   <div class="ball-cal-split">
     <div class="ball-cal-panel">
@@ -109,14 +109,14 @@
     <details class="advanced-details" id="hsv-details">
       <summary>HSV Tolerances</summary>
       <div class="tolerance-sliders">
-        <label>Hue ±<span id="hue-val">18</span>
-          <input type="range" id="hue-tol" min="5" max="60" value="18">
+        <label>Hue ±<span id="hue-val">16</span>
+          <input type="range" id="hue-tol" min="5" max="60" value="16">
         </label>
-        <label>Saturation ±<span id="sat-val">60</span>
-          <input type="range" id="sat-tol" min="10" max="100" value="60">
+        <label>Saturation tol <span id="sat-val">40</span>
+          <input type="range" id="sat-tol" min="10" max="100" value="40">
         </label>
-        <label>Min Brightness <span id="v-val">80</span>
-          <input type="range" id="v-floor" min="20" max="150" value="80">
+        <label>Min Brightness <span id="v-val">70</span>
+          <input type="range" id="v-floor" min="20" max="150" value="70">
         </label>
       </div>
     </details>

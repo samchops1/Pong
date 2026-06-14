@@ -1,21 +1,28 @@
 ---
-name: Ball tracking & on-screen feedback (Pong Ref)
-description: Why trajectory/speed may look absent, and how live feedback + throw thresholds work
+name: Ball tracking, color matching & on-screen feedback (Pong Ref)
+description: How HSV ball detection works, why it over-matches, and how live feedback + throw thresholds behave
 ---
 
-# Ball tracking feedback
+# Ball tracking & color matching
 
-Ball position is found purely by **HSV color matching** (sampled by tapping the ball on the calibration screen). It is fragile: a small, fast, motion-blurred ball is easily missed, especially low-saturation (white) balls.
+Ball position is found purely by **HSV color matching** of a sampled ball color. It is fragile and was the #1 source of "nothing works" reports.
 
-**If a user says "I don't see trajectory / speed":** the usual root cause is the color detector not picking up the ball, NOT the rendering. The game overlay now shows an on-canvas status badge ("Tracking ball" vs "No ball — re-sample color") so the user can tell which. If it says "No ball", they need to re-sample the ball color / loosen HSV tolerances.
+## Saturation matching is a one-sided FLOOR, not a band
+The original matcher used a symmetric band `|s - sampledSat| <= satTol` with a large default — this matched washed-out warm walls/table/skin whenever a saturated ball was sampled, painting almost the whole frame green. Correct model:
+- **Colored ball** (sampledSat >= ~22): require hue within tol AND `s >= max(25, sampledSat - satTol)` (a floor). This rejects desaturated background that merely shares the ball's hue.
+- **White/pale ball** (sampledSat < ~22): hue is meaningless, so match low saturation + brightness only. A white ball on a white table/wall is **inherently** unseparable by color — steer users to an **orange** ball.
+**Why:** desaturated surfaces share hue with the ball; only saturation separates them.
 
-**Rendering model (in `drawOverlays`):**
-- A live glowing marker draws only while a detection is fresh (recent ms window).
-- A continuous fading trail draws from the rolling `ballPositions` buffer when NOT in an active throw; segments with large time gaps or old age are skipped so no stale long lines appear.
-- The parabola arc still renders during/after a registered throw from `throwBuffer`/`lastArcPoints`.
+## Sampling must bias toward saturated pixels
+`sampleBallColor` medians a small patch. A naive median of a patch around a *small* ball on a bright table samples the background → low saturation → drops into pale mode → everything green. Fix: collect patch pixels, and if a decent fraction are colored (s>=35), take the median of ONLY those; else fall back to the overall median (and warn).
 
-**Throw state machine is intentionally gap-tolerant:** start requires only `THROW_MIN_FRAMES-1` of the last frames moving (tolerates one dropped frame); mid-flight end waits several missing frames (not ~2) before ending. Make detection is unaffected because it still waits `DISAPPEAR_FOR_MAKE` missing frames on `postThrowBuffer` after the throw ends.
+## One matcher, one source of truth
+The calibration green-mask preview MUST call the exact same matcher as the live tracker (`Vision.matchesBall`). A second hand-rolled copy will drift and lie about what the game detects.
 
-**Speed:** shown for EVERY throw (overlay), with a "PB" badge + commentary only on a new team record. Per-team fastest lives in the side panels.
+## Diagnosing in the field
+The in-game overlay shows a status badge ("Tracking ball" vs "No ball — re-sample color"). If a user says trajectory/speed/makes don't work, the usual cause is the color detector, not the rendering or the make-detection logic. Make detection (`checkCupMake`) only fires when real ball positions land near a cup before disappearing, so bad tracking silently disables it.
 
-**Why:** continuous feedback was missing — overlays only appeared after a fully-detected throw, so the view looked dead even when the camera worked.
+## Rendering & throw state machine
+- Live glowing marker draws only while a detection is fresh; a fading trail draws from `ballPositions` when not in an active throw (stale/old segments skipped).
+- Throw start tolerates one dropped frame; mid-flight end waits several missing frames. Make detection is unaffected (still waits `DISAPPEAR_FOR_MAKE` missing frames after the throw ends).
+- Speed shows for EVERY throw (overlay); "PB" badge + commentary only on a new team record; per-team fastest lives in the side panels.

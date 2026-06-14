@@ -300,9 +300,19 @@ async function startBallCal() {
   ballSampled = false; pendingMask = false;
   showScreen('screen-calibrate-ball');
   document.getElementById('btn-start-game').disabled = true;
-  document.getElementById('hsv-info').textContent = '';
+  const infoEl = document.getElementById('hsv-info');
+  infoEl.textContent = ''; infoEl.classList.remove('warn');
   document.getElementById('ball-sample-dot').classList.add('hidden');
   document.getElementById('mask-hint').classList.remove('hidden');
+  // Sync the tolerance sliders to the current Vision tolerances (defaults or
+  // restored config) so the UI and the matcher never disagree.
+  const tol0 = Vision.hsvTol;
+  document.getElementById('hue-tol').value = tol0.hue;
+  document.getElementById('sat-tol').value = tol0.sat;
+  document.getElementById('v-floor').value = tol0.valFloor;
+  document.getElementById('hue-val').textContent = tol0.hue;
+  document.getElementById('sat-val').textContent = tol0.sat;
+  document.getElementById('v-val').textContent = tol0.valFloor;
 
   const video = document.getElementById('ball-video');
   const canvas = document.getElementById('ball-canvas');
@@ -359,25 +369,14 @@ async function startBallCal() {
 }
 
 function applyMaskOverlay(ctx, canvas) {
+  if (!Vision.ballHSV) return;
   try {
     const img = ctx.getImageData(0,0,canvas.width,canvas.height);
-    const d = img.data, bsv = Vision.ballHSV, tol = Vision.hsvTol;
+    const d = img.data;
+    // Use the EXACT matcher the tracker uses, so the green preview shows what
+    // the game will actually detect (no drift between preview and tracking).
     for (let i=0;i<d.length;i+=4) {
-      const r=d[i],g=d[i+1],b=d[i+2];
-      const max=Math.max(r,g,b)/255, min=Math.min(r,g,b)/255, dd=(max-min);
-      const v=max*100;
-      if (v<tol.valFloor) continue;
-      const s=(max>0?dd/max:0)*100;
-      let h=0;
-      if (dd>0) {
-        const r2=r/255,g2=g/255,b2=b/255;
-        if (max===r2/255*255/255||max===r/255) h=((g2-b2)/dd+6)%6;
-        else if (max===g/255) h=(b2-r2)/dd+2;
-        else h=(r2-g2)/dd+4;
-        h*=60;
-      }
-      const dh=Math.min(Math.abs(h-bsv.hue),360-Math.abs(h-bsv.hue));
-      if (dh<=tol.hue && Math.abs(s-bsv.sat)<=tol.sat) {
+      if (Vision.matchesBall(d[i], d[i+1], d[i+2])) {
         d[i]=0; d[i+1]=220; d[i+2]=60; d[i+3]=200;
       }
     }
@@ -403,8 +402,12 @@ function onBallClick(e) {
   const hsv = Vision.sampleBallColor(x, y);
   if (!hsv) return;
   ballSampled = true; pendingMask = true;
-  document.getElementById('hsv-info').textContent =
-    `Sampled: H=${hsv.hue.toFixed(0)}° S=${hsv.sat.toFixed(0)}% V=${hsv.val.toFixed(0)}%`;
+  const info = document.getElementById('hsv-info');
+  const pale = hsv.sat < 22;
+  info.textContent =
+    `Sampled: H=${hsv.hue.toFixed(0)}° S=${hsv.sat.toFixed(0)}% V=${hsv.val.toFixed(0)}%` +
+    (pale ? ' — ⚠ pale/white ball is hard to isolate; an orange ball tracks far better' : '');
+  info.classList.toggle('warn', pale);
   const dot = document.getElementById('ball-sample-dot');
   dot.style.left = e.clientX + 'px';
   dot.style.top = e.clientY + 'px';
