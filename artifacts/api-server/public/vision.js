@@ -39,6 +39,40 @@ const CUP_LAYOUTS = {
   }
 };
 
+/* End-on camera view: table LENGTH runs near↔far (bottom↔top of frame).
+   u=0 left side → u=1 right side (across the short width);
+   v=0 near end (Team A rack) → v=1 far end (Team B rack).
+   Same triangle shape — base row 4 cups, then 3, 2, 1 apex toward center.
+   Rows step ~0.035 in v; cups step ~0.153 in u. */
+const CUP_LAYOUTS_ENDON = {
+  10: {
+    teamA: [
+      {id:1,u:0.270,v:0.060},{id:2,u:0.423,v:0.060},{id:3,u:0.577,v:0.060},{id:4,u:0.730,v:0.060},
+      {id:5,u:0.345,v:0.095},{id:6,u:0.500,v:0.095},{id:7,u:0.655,v:0.095},
+      {id:8,u:0.423,v:0.130},{id:9,u:0.577,v:0.130},
+      {id:10,u:0.500,v:0.165}
+    ],
+    teamB: [
+      {id:1,u:0.270,v:0.940},{id:2,u:0.423,v:0.940},{id:3,u:0.577,v:0.940},{id:4,u:0.730,v:0.940},
+      {id:5,u:0.345,v:0.905},{id:6,u:0.500,v:0.905},{id:7,u:0.655,v:0.905},
+      {id:8,u:0.423,v:0.870},{id:9,u:0.577,v:0.870},
+      {id:10,u:0.500,v:0.835}
+    ]
+  },
+  6: {
+    teamA: [
+      {id:1,u:0.345,v:0.060},{id:2,u:0.500,v:0.060},{id:3,u:0.655,v:0.060},
+      {id:4,u:0.423,v:0.095},{id:5,u:0.577,v:0.095},
+      {id:6,u:0.500,v:0.130}
+    ],
+    teamB: [
+      {id:1,u:0.345,v:0.940},{id:2,u:0.500,v:0.940},{id:3,u:0.655,v:0.940},
+      {id:4,u:0.423,v:0.905},{id:5,u:0.577,v:0.905},
+      {id:6,u:0.500,v:0.870}
+    ]
+  }
+};
+
 /* State */
 let video, canvas, ctx;
 let calibration = null;
@@ -46,6 +80,7 @@ let ballHSV = null;
 let cupLayout = null;
 // Manual fine-tune of the projected cup template (corrects camera perspective).
 let cupAdjust = { teamA: {dx:0, dy:0}, teamB: {dx:0, dy:0}, scale: 1, radiusMul: 1 };
+let cupLayoutFixed = false;  // true when user placed cups via click-to-place
 let ballPositions = [];   // rolling 30-frame buffer
 let throwBuffer = [];     // positions during active throw
 let throwActive = false;
@@ -265,14 +300,26 @@ function foulSideDist(ex, ey, line) {
 
 /* ── Cup Position Computation ── */
 function computeCupPixelPositions(corners, count, side) {
-  const layout = CUP_LAYOUTS[count];
+  // Choose the template set that matches the camera orientation.
+  const orient = calibration ? calibration.orientation : 'side-across';
+  const layouts = orient === 'end-on' ? CUP_LAYOUTS_ENDON : CUP_LAYOUTS;
+  const layout = layouts[count];
   if (!layout) return [];
   const worldCups = layout[side];
-  // Estimate cup radius from the table's SHORT (depth) dimension —
-  // the left/right end edges in the side-across view (v axis extent).
-  const leftLen  = Math.hypot(corners[2].x-corners[0].x, corners[2].y-corners[0].y);
-  const rightLen = Math.hypot(corners[3].x-corners[1].x, corners[3].y-corners[1].y);
-  const avgW = (leftLen+rightLen)/2;
+
+  // Cup radius from the table's SHORT (width) dimension in pixels.
+  // Side-across: left/right edges span the table depth (front→back = short axis).
+  // End-on:      near/far edges span the table width (left→right = short axis).
+  let avgW;
+  if (orient === 'end-on') {
+    const nearLen = Math.hypot(corners[1].x-corners[0].x, corners[1].y-corners[0].y);
+    const farLen  = Math.hypot(corners[3].x-corners[2].x, corners[3].y-corners[2].y);
+    avgW = (nearLen + farLen) / 2;
+  } else {
+    const leftLen  = Math.hypot(corners[2].x-corners[0].x, corners[2].y-corners[0].y);
+    const rightLen = Math.hypot(corners[3].x-corners[1].x, corners[3].y-corners[1].y);
+    avgW = (leftLen + rightLen) / 2;
+  }
   const r = Math.max(8, Math.min(60, avgW * 0.08 * (cupAdjust.radiusMul || 1)));
 
   // Project the template, then apply the user's manual fine-tune: scale the rack
@@ -826,21 +873,40 @@ window.Vision = {
   },
 
   setCalibration(corners, tableFt) {
-    // Side-across view: table LENGTH (tableFt) runs along the front/back long edges.
-    const frontLen = Math.hypot(corners[1].x-corners[0].x, corners[1].y-corners[0].y);
-    const backLen  = Math.hypot(corners[3].x-corners[2].x, corners[3].y-corners[2].y);
-    const pixPerFt = ((frontLen+backLen)/2) / Math.max(1, tableFt);
+    const frontLen   = Math.hypot(corners[1].x-corners[0].x, corners[1].y-corners[0].y);
+    const backLen    = Math.hypot(corners[3].x-corners[2].x, corners[3].y-corners[2].y);
+    const leftHeight = Math.hypot(corners[2].x-corners[0].x, corners[2].y-corners[0].y);
+    const rightHeight= Math.hypot(corners[3].x-corners[1].x, corners[3].y-corners[1].y);
+
+    // Auto-detect camera orientation from the quadrilateral shape:
+    // if the left edge (near→far depth) is taller than the near edge is wide,
+    // the camera is looking along the table's length (end-on view); else side-across.
+    const orientation = leftHeight > frontLen ? 'end-on' : 'side-across';
+
+    // pixels-per-foot along the table LENGTH axis
+    const pixPerFt = orientation === 'end-on'
+      ? ((leftHeight + rightHeight) / 2) / Math.max(1, tableFt)
+      : ((frontLen + backLen) / 2)        / Math.max(1, tableFt);
+
     const roiPoly = [corners[0],corners[1],corners[3],corners[2]];
     const bounds = polyBounds(roiPoly);
     const center = worldToCanvas(0.5, 0.5, corners);
+
+    // Foul lines = each team's shooter end of the table.
+    // Side-across: Team A on LEFT end (c0↔c2), Team B on RIGHT end (c1↔c3).
+    // End-on:      Team A at NEAR end bottom (c0↔c1), Team B at FAR end top (c2↔c3).
+    const foulLineA = orientation === 'end-on'
+      ? { p1:corners[0], p2:corners[1] }   // near edge (bottom of frame)
+      : { p1:corners[0], p2:corners[2] };  // left edge
+    const foulLineB = orientation === 'end-on'
+      ? { p1:corners[2], p2:corners[3] }   // far edge (top of frame)
+      : { p1:corners[1], p2:corners[3] };  // right edge
+
     calibration = {
-      corners, tableFt, pixPerFt, center,
-      // Foul line = shooter's END of the table (side-across view):
-      // Team A on the LEFT end, Team B on the RIGHT end.
-      foulLineA: { p1:corners[0], p2:corners[2] },  // left end
-      foulLineB: { p1:corners[1], p2:corners[3] },  // right end
-      foulLine:  { p1:corners[0], p2:corners[2] },  // default (Team A / left)
-      farLine:   { p1:corners[2], p2:corners[3] },
+      corners, tableFt, pixPerFt, center, orientation,
+      foulLineA, foulLineB,
+      foulLine: foulLineA,
+      farLine: { p1:corners[2], p2:corners[3] },
       roiPoly, bounds
     };
     return calibration;
@@ -848,12 +914,23 @@ window.Vision = {
 
   setCupLayout(count) {
     if (!calibration) return null;
+    if (cupLayoutFixed) return cupLayout;  // user placed cups manually — don't rebuild
     cupLayout = {
       teamA: computeCupPixelPositions(calibration.corners, count, 'teamA'),
       teamB: computeCupPixelPositions(calibration.corners, count, 'teamB')
     };
     return cupLayout;
   },
+
+  setCupLayoutDirect(layout) {
+    if (!layout) return;
+    cupLayout = { teamA: layout.teamA || [], teamB: layout.teamB || [] };
+    cupLayoutFixed = true;
+  },
+
+  get cupLayout()      { return cupLayout; },
+  get orientation()    { return calibration ? calibration.orientation : null; },
+  get cupLayoutFixed() { return cupLayoutFixed; },
 
   get cupAdjust() { return cupAdjust; },
   setCupAdjust(a) {
@@ -871,7 +948,7 @@ window.Vision = {
   },
   setCupSpread(scale)  { cupAdjust.scale = Math.max(0.7, Math.min(1.4, scale)); },
   setCupRadiusMul(m)   { cupAdjust.radiusMul = Math.max(0.8, Math.min(1.8, m)); },
-  resetCupAdjust()     { cupAdjust = { teamA:{dx:0,dy:0}, teamB:{dx:0,dy:0}, scale:1, radiusMul:1 }; },
+  resetCupAdjust()     { cupAdjust = { teamA:{dx:0,dy:0}, teamB:{dx:0,dy:0}, scale:1, radiusMul:1 }; cupLayoutFixed = false; cupLayout = null; },
 
   startTracking(cbs, gsGetter) {
     throwCbs = cbs || {};

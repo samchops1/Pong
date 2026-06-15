@@ -30,6 +30,10 @@ let ballSampled = false;
 let pendingMask = false;
 let cupAdjustMode = false;
 let cupDrag = null;
+let cupClickMode = false;
+let cupClickPlaced = { teamA: [], teamB: [] };
+let cupClickTeam = 'teamA';
+let cupClickRadius = 25;
 let confettiRaf = null;
 const SAVE_KEY = 'pongref_v5';
 const HISTORY_KEY = 'pongref_history_v1';
@@ -149,6 +153,7 @@ function initSetupScreen() {
         if (cv.ballHSV) Vision.ballHSV = cv.ballHSV;
         if (cv.hsvTol) Vision.setHsvTol(cv.hsvTol);
         if (cv.cupAdjust) Vision.setCupAdjust(cv.cupAdjust);
+        if (cv.clickedLayout) Vision.setCupLayoutDirect(cv.clickedLayout);
         window._cfg = window._cfg || {
           tableFt: state.tableFt, cupCount: state.cupCount,
           mode: state.mode, ballsBack: state.ballsBack, strictFoul: state.strictFoul,
@@ -177,6 +182,7 @@ const CORNER_INSTR = [
 async function startCalCorners() {
   calCorners = []; cornerStep = 0;
   cupAdjustMode = false; cupDrag = null;
+  cupClickMode = false; cupClickPlaced = { teamA:[], teamB:[] }; cupClickTeam = 'teamA';
   Vision.resetCupAdjust();
   const adjCtrl = document.getElementById('cup-adjust-controls');
   if (adjCtrl) adjCtrl.classList.add('hidden');
@@ -204,7 +210,10 @@ async function startCalCorners() {
       ctx.drawImage(video, 0, 0);
       drawGridGuide(ctx, canvas);
       drawCornerDots(ctx);
-      if (calCorners.length === 4) drawCalOverlay(ctx);
+      if (calCorners.length === 4) {
+        drawCalOverlay(ctx);
+        if (cupClickMode) drawClickOverlay(ctx);
+      }
     }
     requestAnimationFrame(loop);
   })();
@@ -212,6 +221,7 @@ async function startCalCorners() {
   canvas.addEventListener('click', onCornerClick);
   document.getElementById('btn-redo-corners').onclick = () => {
     calCorners = []; cornerStep = 0;
+    cupClickMode = false; cupClickPlaced = { teamA:[], teamB:[] }; cupClickTeam = 'teamA';
     exitCupAdjust();
     Vision.resetCupAdjust();
     canvas.addEventListener('click', onCornerClick);
@@ -306,8 +316,12 @@ function enterCupAdjust() {
   cupAdjustMode = true; cupDrag = null;
   const canvas = document.getElementById('cal-canvas');
   canvas.removeEventListener('click', onCornerClick);
+  const orient = Vision.orientation;
+  const orientHint = orient === 'end-on'
+    ? ' (end-on view \u2014 cups appear top/bottom)'
+    : ' (side-across \u2014 cups appear left/right)';
   document.getElementById('corner-instruction').innerHTML =
-    'Drag each team\u2019s ring of cups onto the real cups. Use the sliders to fine-tune, then Continue.';
+    'Drag each team\u2019s ring onto the real cups. Use sliders to fine-tune, then Continue.' + orientHint;
   const controls = document.getElementById('cup-adjust-controls');
   if (controls) controls.classList.remove('hidden');
   const adj = Vision.cupAdjust || {};
@@ -318,17 +332,48 @@ function enterCupAdjust() {
   canvas.addEventListener('pointerdown', onCupPointerDown);
   canvas.addEventListener('pointermove', onCupPointerMove);
   window.addEventListener('pointerup', onCupPointerUp);
+  canvas.addEventListener('click', onCupClick);
   document.getElementById('btn-cups-continue').onclick = proceedToBallCal;
+
+  const cfg = window._cfg || {};
+  const clickBtn = document.getElementById('btn-cup-click');
+  if (clickBtn) clickBtn.onclick = () => {
+    if (cupClickMode) {
+      cupClickMode = false; cupClickPlaced = { teamA:[], teamB:[] }; cupClickTeam = 'teamA';
+      clickBtn.textContent = 'Click Cups';
+      updateCupClickHint();
+    } else {
+      const layout = Vision.setCupLayout(cfg.cupCount) || {};
+      cupClickRadius = (layout.teamA && layout.teamA[0] && layout.teamA[0].r) || 25;
+      cupClickMode = true;
+      cupClickPlaced = { teamA:[], teamB:[] };
+      cupClickTeam = 'teamA';
+      clickBtn.textContent = 'Cancel Click Mode';
+      updateCupClickHint();
+    }
+  };
+  const clearBtn = document.getElementById('btn-cup-click-clear');
+  if (clearBtn) clearBtn.onclick = () => {
+    if (!cupClickMode) return;
+    cupClickPlaced[cupClickTeam] = [];
+    updateCupClickHint();
+  };
 }
 
 function exitCupAdjust() {
   cupAdjustMode = false; cupDrag = null;
+  cupClickMode = false; cupClickPlaced = { teamA:[], teamB:[] }; cupClickTeam = 'teamA';
   const canvas = document.getElementById('cal-canvas');
   canvas.removeEventListener('pointerdown', onCupPointerDown);
   canvas.removeEventListener('pointermove', onCupPointerMove);
   window.removeEventListener('pointerup', onCupPointerUp);
+  canvas.removeEventListener('click', onCupClick);
   const controls = document.getElementById('cup-adjust-controls');
   if (controls) controls.classList.add('hidden');
+  const clickBtn = document.getElementById('btn-cup-click');
+  if (clickBtn) clickBtn.textContent = 'Click Cups';
+  const hint = document.getElementById('cup-click-hint');
+  if (hint) hint.textContent = '';
 }
 
 /* Pick the team whose rack centroid is nearest the pointer. */
@@ -349,7 +394,7 @@ function nearestRackSide(pt) {
 }
 
 function onCupPointerDown(e) {
-  if (!cupAdjustMode) return;
+  if (!cupAdjustMode || cupClickMode) return;
   const canvas = document.getElementById('cal-canvas');
   const pt = canvasCoords(canvas, e);
   cupDrag = { side: nearestRackSide(pt), x: pt.x, y: pt.y };
@@ -365,7 +410,67 @@ function onCupPointerMove(e) {
 
 function onCupPointerUp() { cupDrag = null; }
 
+/* Click-to-place: user taps each cup position directly on the calibration canvas. */
+function onCupClick(e) {
+  if (!cupClickMode) return;
+  const canvas = document.getElementById('cal-canvas');
+  const pt = canvasCoords(canvas, e);
+  const cfg = window._cfg || {};
+  const count = cfg.cupCount || 10;
+  if (cupClickTeam === 'teamA' && cupClickPlaced.teamA.length < count) {
+    cupClickPlaced.teamA.push({ id: cupClickPlaced.teamA.length + 1, x: pt.x, y: pt.y, r: cupClickRadius });
+    if (cupClickPlaced.teamA.length === count) cupClickTeam = 'teamB';
+  } else if (cupClickTeam === 'teamB' && cupClickPlaced.teamB.length < count) {
+    cupClickPlaced.teamB.push({ id: cupClickPlaced.teamB.length + 1, x: pt.x, y: pt.y, r: cupClickRadius });
+  }
+  updateCupClickHint();
+}
+
+function updateCupClickHint() {
+  const hint = document.getElementById('cup-click-hint');
+  if (!hint) return;
+  const cfg = window._cfg || {};
+  const count = cfg.cupCount || 10;
+  if (!cupClickMode) { hint.textContent = ''; return; }
+  const aCount = cupClickPlaced.teamA.length;
+  const bCount = cupClickPlaced.teamB.length;
+  if (aCount < count) {
+    hint.textContent = `Team A: ${aCount}/${count} \u2014 tap each cup`;
+  } else if (bCount < count) {
+    hint.textContent = `Team B: ${bCount}/${count} \u2014 tap each cup`;
+  } else {
+    hint.textContent = `All ${count * 2} cups placed! Press Continue \u2192`;
+  }
+}
+
+function drawClickOverlay(ctx) {
+  const teams = [
+    { side: 'teamA', color: 'rgba(88,166,255,0.85)' },
+    { side: 'teamB', color: 'rgba(247,129,102,0.85)' }
+  ];
+  for (const { side, color } of teams) {
+    for (const cup of cupClickPlaced[side] || []) {
+      const r = cup.r || cupClickRadius;
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(cup.x, cup.y, r, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#000';
+      ctx.font = `bold ${Math.round(r * 0.7)}px sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(cup.id), cup.x, cup.y);
+      ctx.restore();
+    }
+  }
+}
+
 function proceedToBallCal() {
+  const cfg = window._cfg || {};
+  const count = cfg.cupCount || 10;
+  if (cupClickMode && cupClickPlaced.teamA.length === count && cupClickPlaced.teamB.length === count) {
+    Vision.setCupLayoutDirect({ teamA: cupClickPlaced.teamA, teamB: cupClickPlaced.teamB });
+  }
   calPreviewActive = false;
   exitCupAdjust();
   document.getElementById('cal-canvas').removeEventListener('click', onCornerClick);
@@ -1632,7 +1737,8 @@ function saveState() {
       calCorners: calCorners.length === 4 ? calCorners : null,
       ballHSV: Vision.ballHSV || null,
       hsvTol: {...Vision.hsvTol},
-      cupAdjust: Vision.cupAdjust ? JSON.parse(JSON.stringify(Vision.cupAdjust)) : null
+      cupAdjust: Vision.cupAdjust ? JSON.parse(JSON.stringify(Vision.cupAdjust)) : null,
+      clickedLayout: Vision.cupLayoutFixed ? JSON.parse(JSON.stringify(Vision.cupLayout)) : null
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify({ gameState, cvState }));
   } catch(e) {}
