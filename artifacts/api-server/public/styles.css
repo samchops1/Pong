@@ -142,6 +142,11 @@ input[type="number"] { max-width: 200px; }
   font-size: 0.78rem; color: var(--text); flex: 1; min-width: 120px;
 }
 .btn-sm { font-size: 0.75rem; padding: 5px 10px; }
+.cup-detect-badge {
+  font-size: 0.74rem; padding: 2px 9px; border-radius: 10px; flex: 1; min-width: 130px;
+}
+.cup-detect-badge.detect-ok   { background: rgba(63,185,80,0.13); color: #3fb950; }
+.cup-detect-badge.detect-warn { background: rgba(247,129,102,0.13); color: #f7816a; }
 
 .sample-dot {
   position: absolute; width: 30px; height: 30px; border-radius: 50%;

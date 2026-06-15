@@ -358,6 +358,31 @@ function enterCupAdjust() {
     cupClickPlaced[cupClickTeam] = [];
     updateCupClickHint();
   };
+
+  // Auto-detect red Solo cups on entry; re-run when the user presses Re-scan
+  const badge = document.getElementById('cup-detect-badge');
+  const runDetect = () => {
+    if (badge) { badge.textContent = 'Scanning\u2026'; badge.className = 'cup-detect-badge'; }
+    requestAnimationFrame(() => {
+      const detected = Vision.detectCups(cfg.cupCount);
+      if (detected) {
+        Vision.setCupLayoutDirect(detected);
+        const placed = detected.teamA.length + detected.teamB.length;
+        if (badge) {
+          badge.textContent = `\u2713 ${detected.totalFound} cups detected (${placed} placed)`;
+          badge.className = 'cup-detect-badge detect-ok';
+        }
+      } else {
+        if (badge) {
+          badge.textContent = 'No cups detected \u2014 drag or click to place';
+          badge.className = 'cup-detect-badge detect-warn';
+        }
+      }
+    });
+  };
+  const rescanBtn = document.getElementById('btn-cup-rescan');
+  if (rescanBtn) rescanBtn.onclick = runDetect;
+  setTimeout(runDetect, 200);
 }
 
 function exitCupAdjust() {

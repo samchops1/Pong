@@ -118,6 +118,9 @@ const CV_MAX_WIDTH = 640;   // ball detection runs on a buffer no wider than thi
 const DISAPPEAR_FOR_MAKE = 8;
 const FOUL_DEBOUNCE_MS = 3000;
 const FOUL_GRACE_PX = 12;
+const RED_HUE_TOL  = 18;   // degrees from 0° — red wraps both ends of hue wheel
+const RED_SAT_MIN  = 55;   // saturation % floor for Solo-cup red
+const RED_VAL_MIN  = 50;   // value % floor
 
 /* ── Math helpers ── */
 function rgbToHsv(r, g, b) {
@@ -151,6 +154,14 @@ function matchesBall(r, g, b) {
   // Clamp the floor with a small absolute minimum so a weakly-colored sample
   // can't admit broad swaths of desaturated background.
   return s >= Math.max(25, ballHSV.sat - hsvTol.sat);
+}
+
+/* Returns true if an RGB pixel falls in the red Solo-cup HSV range. */
+function isRedCup(r, g, b) {
+  const { h, s, v } = rgbToHsv(r, g, b);
+  if (s < RED_SAT_MIN || v < RED_VAL_MIN) return false;
+  // Red wraps: hue is near 0° (which is both 0 and 360 on the wheel)
+  return Math.min(h, 360 - h) <= RED_HUE_TOL;
 }
 
 /* Bilinear interpolation: world [u,v] → canvas [x,y] */
@@ -199,6 +210,162 @@ function findLargestBlob(mask, w, h) {
     }
   }
   return best;
+}
+
+/* Returns ALL qualifying blobs (not just the largest). Skips edge-touching blobs. */
+function findAllBlobs(mask, w, h, minPx, maxPx) {
+  const vis = new Uint8Array(w * h);
+  const blobs = [];
+  for (let i = 0; i < w * h; i++) {
+    if (!mask[i] || vis[i]) continue;
+    const queue = [i]; vis[i] = 1;
+    let head = 0, sx = 0, sy = 0, cnt = 0, touchesEdge = false;
+    while (head < queue.length) {
+      const idx = queue[head++];
+      const bx = idx % w, by = (idx / w) | 0;
+      sx += bx; sy += by; cnt++;
+      if (cnt > maxPx * 3) break;  // bail early on huge blobs
+      if (bx === 0 || bx === w-1 || by === 0 || by === h-1) touchesEdge = true;
+      for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+        const nx = bx+dx, ny = by+dy;
+        if (nx<0||ny<0||nx>=w||ny>=h) continue;
+        const ni = ny*w+nx;
+        if (mask[ni] && !vis[ni]) { vis[ni]=1; queue.push(ni); }
+      }
+    }
+    if (touchesEdge || cnt < minPx || cnt > maxPx) continue;
+    blobs.push({ cx: sx/cnt, cy: sy/cnt, cnt });
+  }
+  return blobs;
+}
+
+/* Merge blobs whose centres are closer than mergeR pixels (weighted centroid). */
+function clusterBlobs(blobs, mergeR) {
+  const out = blobs.map(b => ({...b}));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    outer: for (let i = 0; i < out.length; i++) {
+      for (let j = i+1; j < out.length; j++) {
+        if (Math.hypot(out[i].cx - out[j].cx, out[i].cy - out[j].cy) < mergeR) {
+          const t = out[i].cnt + out[j].cnt;
+          out[i].cx = (out[i].cx*out[i].cnt + out[j].cx*out[j].cnt) / t;
+          out[i].cy = (out[i].cy*out[i].cnt + out[j].cy*out[j].cnt) / t;
+          out[i].cnt = t;
+          out.splice(j, 1);
+          changed = true; break outer;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/* Scan the current camera frame for red Solo-cup blobs within the calibrated
+   table region.  Returns {teamA, teamB, totalFound} with cups in display-pixel
+   coords, or null if too few cups are visible for either team. */
+function detectRedCups(count) {
+  if (!calibration || !canvas || !video || !video.videoWidth) return null;
+  try {
+    ensureCvCanvas();
+    cvCtx.drawImage(video, 0, 0, cvCanvas.width, cvCanvas.height);
+    const cw = cvCanvas.width, ch = cvCanvas.height, sc = cvScale;
+    const corners = calibration.corners;
+
+    // Estimate cup radius in display px (same formula as computeCupPixelPositions)
+    let avgShortPx;
+    if (calibration.orientation === 'end-on') {
+      avgShortPx = (Math.hypot(corners[1].x-corners[0].x, corners[1].y-corners[0].y) +
+                    Math.hypot(corners[3].x-corners[2].x, corners[3].y-corners[2].y)) / 2;
+    } else {
+      avgShortPx = (Math.hypot(corners[2].x-corners[0].x, corners[2].y-corners[0].y) +
+                    Math.hypot(corners[3].x-corners[1].x, corners[3].y-corners[1].y)) / 2;
+    }
+    const cupR_d  = Math.max(8, Math.min(60, avgShortPx * 0.08));  // display px
+    const cupR_cv = Math.max(3, cupR_d * sc);                       // cv (downscaled) px
+    const minBlobPx = Math.max(2, Math.round(Math.PI * (cupR_cv * 0.2) ** 2));
+    const maxBlobPx = Math.round(Math.PI * (cupR_cv * 2.2) ** 2);
+
+    // Crop ImageData to the calibrated table bounds
+    const bds = calibration.bounds;
+    const bx0 = Math.max(0, Math.floor(bds.minX * sc));
+    const by0 = Math.max(0, Math.floor(bds.minY * sc));
+    const bx1 = Math.min(cw - 1, Math.ceil(bds.maxX * sc));
+    const by1 = Math.min(ch - 1, Math.ceil(bds.maxY * sc));
+    const bw = bx1 - bx0, bh = by1 - by0;
+    if (bw <= 0 || bh <= 0) return null;
+
+    const imgData = cvCtx.getImageData(bx0, by0, bw, bh);
+    const d = imgData.data;
+    const mask = new Uint8Array(bw * bh);
+    for (let i = 0; i < mask.length; i++) {
+      const p = i * 4;
+      mask[i] = isRedCup(d[p], d[p+1], d[p+2]) ? 1 : 0;
+    }
+
+    let blobs = findAllBlobs(mask, bw, bh, minBlobPx, maxBlobPx);
+    if (!blobs.length) return null;
+
+    // Merge fragments of the same cup top that split across the blob pass
+    blobs = clusterBlobs(blobs, cupR_cv * 1.8);
+
+    // Convert blob centres to display coords
+    const dispBlobs = blobs.map(b => ({
+      x: (b.cx + bx0) / sc, y: (b.cy + by0) / sc, cnt: b.cnt, r: cupR_d
+    }));
+
+    // Divide by table midpoint: Team A = near/left, Team B = far/right
+    const mid = calibration.center;
+    const groupA = [], groupB = [];
+    for (const blob of dispBlobs) {
+      const isA = calibration.orientation === 'end-on'
+        ? blob.y >= mid.y   // near end (bottom) = Team A
+        : blob.x <= mid.x;  // left half = Team A
+      (isA ? groupA : groupB).push(blob);
+    }
+
+    const minNeeded = Math.max(1, Math.ceil(count / 2));
+    if (groupA.length < minNeeded || groupB.length < minNeeded) return null;
+
+    // Keep up to count cups per team — prefer the largest blobs (most reliable)
+    const trim = arr => arr.slice().sort((a,b) => b.cnt - a.cnt).slice(0, count);
+    let detA = trim(groupA), detB = trim(groupB);
+
+    // Fill any remaining slots from the projected template
+    if (detA.length < count || detB.length < count) {
+      const tpl = {
+        teamA: computeCupPixelPositions(corners, count, 'teamA'),
+        teamB: computeCupPixelPositions(corners, count, 'teamB')
+      };
+      const fillFrom = (detected, template) => {
+        const filled = [...detected];
+        for (const t of template) {
+          if (filled.length >= count) break;
+          if (!filled.some(f => Math.hypot(f.x - t.x, f.y - t.y) < t.r * 2.5))
+            filled.push({ x: t.x, y: t.y, cnt: 0, r: t.r });
+        }
+        return filled;
+      };
+      if (detA.length < count) detA = fillFrom(detA, tpl.teamA);
+      if (detB.length < count) detB = fillFrom(detB, tpl.teamB);
+    }
+
+    // Sort spatially to assign IDs matching the triangle layout:
+    //   side-across A (left end): left→right, top→bottom
+    //   side-across B (right end): right→left, top→bottom
+    //   end-on A (near, large y):  bottom→top (base row first), left→right
+    //   end-on B (far,  small y):  top→bottom (base row first), left→right
+    if (calibration.orientation === 'end-on') {
+      detA.sort((a,b) => (b.y - a.y) || (a.x - b.x));
+      detB.sort((a,b) => (a.y - b.y) || (a.x - b.x));
+    } else {
+      detA.sort((a,b) => (a.x - b.x) || (a.y - b.y));
+      detB.sort((a,b) => (b.x - a.x) || (a.y - b.y));
+    }
+    const teamA = detA.map((c,i) => ({ id:i+1, x:c.x, y:c.y, r:c.r }));
+    const teamB = detB.map((c,i) => ({ id:i+1, x:c.x, y:c.y, r:c.r }));
+    return { teamA, teamB, totalFound: blobs.length };
+  } catch(e) { return null; }
 }
 
 /* Lazily (re)size the offscreen CV buffer to a downscaled copy of the display
@@ -932,6 +1099,8 @@ window.Vision = {
   get orientation()    { return calibration ? calibration.orientation : null; },
   get cupLayoutFixed() { return cupLayoutFixed; },
 
+  detectCups(count) { return detectRedCups(count); },
+
   get cupAdjust() { return cupAdjust; },
   setCupAdjust(a) {
     if (!a) return;
@@ -944,7 +1113,12 @@ window.Vision = {
   },
   nudgeCupRack(side, dx, dy) {
     if (side !== 'teamA' && side !== 'teamB') return;
-    cupAdjust[side].dx += dx; cupAdjust[side].dy += dy;
+    if (cupLayoutFixed && cupLayout && cupLayout[side]) {
+      // When cups are in fixed mode (auto-detected or click-placed) nudge positions directly
+      for (const cup of cupLayout[side]) { cup.x += dx; cup.y += dy; }
+    } else {
+      cupAdjust[side].dx += dx; cupAdjust[side].dy += dy;
+    }
   },
   setCupSpread(scale)  { cupAdjust.scale = Math.max(0.7, Math.min(1.4, scale)); },
   setCupRadiusMul(m)   { cupAdjust.radiusMul = Math.max(0.8, Math.min(1.8, m)); },
