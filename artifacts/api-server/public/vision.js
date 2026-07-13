@@ -993,8 +993,11 @@ window.Vision = {
         video: { width:{ideal:1280}, height:{ideal:720}, facingMode: facingMode||'user' }
       });
       video.srcObject = stream;
-      await new Promise(r => { video.onloadedmetadata = r; });
-      video.play();
+      await new Promise(r => {
+        if (video.readyState >= 1) return r();
+        video.onloadedmetadata = () => r();
+      });
+      await video.play().catch(() => {});
       canvas.width = video.videoWidth || 640;
       canvas.height = video.videoHeight || 480;
       return true;
@@ -1169,7 +1172,6 @@ window.Vision = {
   set ballHSV(v) { ballHSV = v; },
 
   get calibration() { return calibration; },
-  get cupLayout() { return cupLayout; },
   get poseConfidence() { return poseConfidence; },
   get lastSpeed() { return lastSpeed; },
   get throwActive() { return throwActive; },

@@ -100,7 +100,12 @@ function display(text) {
 }
 
 function speak(text) {
-  if (muted || !text) return;
+  // Even when muted (or speech is unavailable) the queue must keep draining,
+  // otherwise `speaking` stays true forever and the text bubble stops updating.
+  if (muted || !text || typeof speechSynthesis === 'undefined') {
+    setTimeout(next, 2500);
+    return;
+  }
   try {
     const utt = new SpeechSynthesisUtterance(text);
     utt.rate = 1.1;
@@ -108,10 +113,20 @@ function speak(text) {
     const voices = speechSynthesis.getVoices();
     const energetic = voices.find(v => /Google|en-US/i.test(v.name));
     if (energetic) utt.voice = energetic;
-    utt.onend = next;
-    utt.onerror = next;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(watchdog);
+      next();
+    };
+    // Some browsers never fire onend/onerror (e.g. when speech is blocked) —
+    // a watchdog keeps the queue alive regardless.
+    const watchdog = setTimeout(finish, 12000);
+    utt.onend = finish;
+    utt.onerror = finish;
     speechSynthesis.speak(utt);
-  } catch(e) { next(); }
+  } catch(e) { setTimeout(next, 1000); }
 }
 
 function next() {
