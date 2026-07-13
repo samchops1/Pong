@@ -89,6 +89,7 @@ const queue = [];
 let speaking = false;
 let muted = false;
 let bubble = null;
+let currentFinish = null; // completes the in-flight utterance (idempotent)
 
 function display(text) {
   if (!bubble) bubble = document.getElementById('commentary-bubble');
@@ -118,11 +119,13 @@ function speak(text) {
       if (done) return;
       done = true;
       clearTimeout(watchdog);
+      if (currentFinish === finish) currentFinish = null;
       next();
     };
     // Some browsers never fire onend/onerror (e.g. when speech is blocked) —
     // a watchdog keeps the queue alive regardless.
-    const watchdog = setTimeout(finish, 12000);
+    const watchdog = setTimeout(finish, 8000);
+    currentFinish = finish;
     utt.onend = finish;
     utt.onerror = finish;
     speechSynthesis.speak(utt);
@@ -170,7 +173,15 @@ window.Commentary = {
       processQueue();
     });
   },
-  setMuted(m) { muted = m; if (m) speechSynthesis.cancel(); },
+  setMuted(m) {
+    muted = m;
+    if (m) {
+      try { speechSynthesis.cancel(); } catch(e) {}
+      // cancel() doesn't reliably fire onend/onerror everywhere — force the
+      // in-flight line to complete so the queue keeps draining while muted
+      if (currentFinish) currentFinish();
+    }
+  },
   get muted() { return muted; }
 };
 

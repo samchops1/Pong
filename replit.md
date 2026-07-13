@@ -34,7 +34,9 @@ AI-powered beer pong referee: point a phone/webcam at the table and it tracks th
 
 - All CV runs client-side on canvas pixels; the server only serves static files and generates commentary. No DB usage yet despite the scaffolding.
 - Ball detection is pure HSV color matching against a user-sampled color — fragile by design; the in-game "Tracking ball / No ball" badge is the primary diagnostic.
-- Every auto-detection has a manual fallback: Pass Turn button, tap-a-cup toggle with confirm, rebuttal Made It/Miss buttons, click-to-place cups, undo on makes.
+- Gameplay is fully automatic: vision resolves every qualifying throw as a make (auto-score) or a miss (auto turn advance) — via cup disappearance, bounce-out, ball-at-rest, next-throw-start, or a 6s backstop timer. A throw only qualifies if it traveled ≥ ~1.2 ft toward the defending rack (so handling the ball never burns a turn). Low-confidence makes prompt briefly, then auto-count as a miss after 8s.
+- Duplicate video frames (camera fps < rAF fps) are deduped before throw analysis — a zero-velocity repeat sample must never be treated as a reversal/stop.
+- Every auto-detection still has a manual override: Pass Turn button, tap-a-cup toggle with confirm, rebuttal Made It/Miss buttons, click-to-place cups, undo on makes.
 - Game state persists to localStorage (`pongref_v5`) after every event; calibration (corners, ball HSV, cup layout) is saved alongside so resume skips recalibration.
 - MediaPipe Pose/Hands load from CDN and degrade gracefully (foul/gesture detection disabled) when unavailable.
 

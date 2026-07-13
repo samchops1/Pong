@@ -35,6 +35,10 @@ let cupClickPlaced = { teamA: [], teamB: [] };
 let cupClickTeam = 'teamA';
 let cupClickRadius = 25;
 let confettiRaf = null;
+let shotBackstopTimer = null;  // resolves a throw as a miss if vision never does
+let uncertainOpen = false;     // low-confidence make prompt is on screen
+const SHOT_BACKSTOP_MS = 6000;
+const UNCERTAIN_AUTO_MS = 8000;
 const SAVE_KEY = 'pongref_v5';
 const HISTORY_KEY = 'pongref_history_v1';
 
@@ -648,6 +652,10 @@ async function startGame() {
   const rebOverlay = document.getElementById('rebuttal-overlay');
   if (rebOverlay) rebOverlay.classList.toggle('hidden', !state.isRebuttal);
   if (state.isRebuttal) updateRebuttalUI();
+  clearShotBackstop();
+  uncertainOpen = false;
+  const uncToast = document.getElementById('uncertain-toast');
+  if (uncToast) uncToast.classList.add('hidden');
 
   updateTeamPanels();
   renderRacks();
@@ -667,7 +675,7 @@ async function startGame() {
     );
     Vision.setCupLayout(state.cupCount);
     Vision.startTracking({
-      onThrowStart, onSpeed, onMakeDetected, onFoulDetected
+      onThrowStart, onThrowEnd, onSpeed, onMakeDetected, onMissDetected, onFoulDetected
     }, getGameState);
     HandGesture.start(video); // Island call: 4-finger palm-toward-camera gesture
   }
@@ -730,6 +738,33 @@ function wireGameButtons() {
 function onThrowStart() {
   const overlay = document.getElementById('speed-overlay');
   if (overlay) overlay.style.display = 'none';
+}
+
+/* A qualifying throw ended: arm a backstop so the shot ALWAYS resolves even if
+   vision loses the ball entirely — no manual click required to advance play. */
+function onThrowEnd() {
+  clearTimeout(shotBackstopTimer);
+  shotBackstopTimer = setTimeout(() => {
+    shotBackstopTimer = null;
+    if (!state || uncertainOpen) return;
+    autoMiss('unresolved');
+  }, SHOT_BACKSTOP_MS);
+}
+
+function onMissDetected() {
+  if (!state || uncertainOpen) return;
+  autoMiss('vision');
+}
+
+function autoMiss() {
+  clearShotBackstop();
+  addEvent(`✗ ${shooterName()} — miss`, 'miss');
+  afterShotHappened(false);
+}
+
+function clearShotBackstop() {
+  clearTimeout(shotBackstopTimer);
+  shotBackstopTimer = null;
 }
 
 function onSpeed(mph) {
@@ -800,6 +835,7 @@ function autoScoreCup(teamKey, cupId) {
   }
   if (state.isChandeliers && cupId === 4) state.chandeliersTopMade[teamKey] = true;
 
+  clearShotBackstop(); // shot is resolving as a make — cancel the miss backstop
   const shooter = shooterName();
   ensureStats(shooter);
   cup.made = true;
@@ -875,6 +911,7 @@ function autoScoreCup(teamKey, cupId) {
 
 /* ── Same-cup bonus ── */
 function triggerSameCupBonus(teamKey) {
+  clearShotBackstop();
   const shooter = shooterName();
   ensureStats(shooter);
 
@@ -1099,6 +1136,7 @@ function findLoneCupId(teamKey) {
 /* ── Central shot handler ── */
 function afterShotHappened(wasMake) {
   if (!state) return;
+  clearShotBackstop();
 
   // Route rebuttal shots separately
   if (state.isRebuttal) { handleRebuttalShot(wasMake); return; }
@@ -1364,6 +1402,8 @@ function showGestureToast(msg) {
 
 /* ── Uncertain prompt ── */
 function showUncertainPrompt(teamKey, cupId) {
+  clearShotBackstop();
+  uncertainOpen = true;
   const teamLetter = teamKey==='teamA'?'A':'B';
   const toast = document.getElementById('uncertain-toast');
   toast.innerHTML = `❓ Cup ${cupId} (Team ${teamLetter}) — did it go in?
@@ -1371,12 +1411,23 @@ function showUncertainPrompt(teamKey, cupId) {
     <button id="unc-no">Miss ✗</button>`;
   toast.classList.remove('hidden');
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => toast.classList.add('hidden'), 15000);
+  // Fully automated flow: with no confirmation the shot counts as a miss and
+  // play advances on its own (a wrong call is fixable by tapping the cup).
+  toast._t = setTimeout(() => {
+    toast.classList.add('hidden');
+    uncertainOpen = false;
+    addEvent(`✗ Cup ${cupId} unconfirmed — counted as miss`, 'miss');
+    afterShotHappened(false);
+  }, UNCERTAIN_AUTO_MS);
   document.getElementById('unc-yes').onclick = () => {
+    clearTimeout(toast._t);
+    uncertainOpen = false;
     autoScoreCup(teamKey, cupId);
     toast.classList.add('hidden');
   };
   document.getElementById('unc-no').onclick = () => {
+    clearTimeout(toast._t);
+    uncertainOpen = false;
     toast.classList.add('hidden');
     afterShotHappened(false);
   };
@@ -1566,6 +1617,12 @@ function openToggleModal(teamKey, cupId) {
     } else {
       cup.madeBy = shooter; ensureStats(shooter); state.playerStats[shooter].made++;
       addEvent(`✋ Cup ${cupId} (${teamLetter}) manually marked`, 'manual');
+      const remaining = (state.cups[teamKey]||[]).filter(c=>!c.made).length;
+      Commentary.fire('make', {
+        player: shooter, defending: `Team ${teamLetter}`, cupId,
+        lastCup: remaining===0, oneCupLeft: remaining===1,
+        twoCupsLeft: remaining===2, threeCupsLeft: remaining===3
+      });
     }
     updateCupCount(); renderRacks(); updateTeamPanels(); saveState();
     if (!wasMade) checkWinCondition(teamKey);
