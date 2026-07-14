@@ -97,6 +97,8 @@ let lastPoseTime = 0;
 let lastFoulTime = -Infinity;
 let foulFlashUntil = 0;
 let trackingActive = false;
+let awaitingShot = false;   // a qualifying throw ended; make/miss not yet resolved
+let throwSlowFrames = 0;    // consecutive near-stationary frames during a throw
 let animId = null;
 let throwCbs = {};
 let getGameState = null;
@@ -557,13 +559,32 @@ function checkCupMake(positions, disappearFrames, shootingTeam, activeCupIds) {
 
 /* ── Throw Tracking State Machine ── */
 function onBallDetected(pos) {
-  // Ball reappeared — cancel post-throw monitor (was a bounce)
+  // Ball reappeared — cancel post-throw monitor (was a bounce). A bounced-out
+  // ball resolves the pending shot as a MISS so the turn advances on its own.
   if (postThrowBuffer && postThrowBuffer.disappearFrames < DISAPPEAR_FOR_MAKE) {
     postThrowBuffer = null;
+    if (awaitingShot) {
+      awaitingShot = false;
+      if (throwCbs.onMissDetected) throwCbs.onMissDetected({ reason: 'bounce' });
+    }
   }
   ballDisappearFrames = 0;
   lastBallSeenAt = pos.t;
   lastBallPos = { x: pos.x, y: pos.y };
+
+  // Duplicate video frame (camera fps < render fps — e.g. a 30fps camera on a
+  // 60fps rAF loop sees every frame twice). A repeat sample has zero velocity
+  // and would poison throw detection, so refresh liveness but don't buffer it.
+  const prevPos = ballPositions[ballPositions.length-1];
+  if (prevPos && (pos.t - prevPos.t) < 40 &&
+      Math.hypot(pos.x - prevPos.x, pos.y - prevPos.y) < 0.75) {
+    if (throwActive) {
+      // A resting ball only produces duplicates — let the throw wind down
+      throwSlowFrames++;
+      if (throwSlowFrames >= 10) { throwSlowFrames = 0; endThrow(); }
+    }
+    return;
+  }
 
   // Compute velocity
   let vx=0, vy=0;
@@ -586,19 +607,35 @@ function onBallDetected(pos) {
       // prevent a real throw from registering.
       const moving = recent.filter(q => Math.hypot(q.vx, q.vy) > 0.08).length;
       if (moving >= THROW_MIN_FRAMES - 1) {
+        // A new throw starting means the previous unresolved shot was a miss
+        if (awaitingShot) {
+          awaitingShot = false;
+          if (throwCbs.onMissDetected) throwCbs.onMissDetected({ reason: 'next-throw' });
+        }
         throwActive = true;
+        throwSlowFrames = 0;
         throwBuffer = recent.map(q => ({...q}));
         if (throwCbs.onThrowStart) throwCbs.onThrowStart();
       }
     }
   } else {
     throwBuffer.push(p);
+    // Ball rolled to rest while still visible (e.g. on the table after a
+    // rim-out) — end the throw so the shot can resolve instead of hanging.
+    throwSlowFrames = Math.hypot(vx, vy) < 0.06 ? throwSlowFrames + 1 : 0;
+    if (throwSlowFrames >= 10) {
+      throwSlowFrames = 0;
+      endThrow();
+      return;
+    }
     // Throw abort: ball reversed sharply
     if (throwBuffer.length > 3) {
       const n = throwBuffer.length;
       const v1x = throwBuffer[n-2].x - throwBuffer[n-3].x;
       const v2x = p.x - throwBuffer[n-2].x;
-      if (Math.sign(v1x) !== Math.sign(v2x) && Math.abs(v1x) > 5) {
+      // Both legs must be meaningful — a near-zero step (dropped detection,
+      // apex of a lob) is not a reversal and must not abort the throw.
+      if (Math.abs(v1x) > 5 && Math.abs(v2x) > 5 && Math.sign(v1x) !== Math.sign(v2x)) {
         endThrow();
       }
     }
@@ -671,6 +708,25 @@ function endThrow() {
 
   // Start post-throw monitoring
   postThrowBuffer = { positions: buf, disappearFrames: ballDisappearFrames };
+
+  // Auto-referee: arm shot resolution only for a REAL shot — the ball must
+  // have traveled a meaningful distance AND toward the defending rack, so
+  // picking the ball up or jiggling it in hand never burns a turn.
+  const first = buf[0], last = buf[buf.length - 1];
+  const disp = Math.hypot(last.x - first.x, last.y - first.y);
+  const minDisp = calibration ? calibration.pixPerFt * 1.2 : 60;
+  let towardTarget = true;
+  const gs = getGameState ? getGameState() : null;
+  if (gs && calibration) {
+    const dx = last.x - first.x, dy = last.y - first.y;
+    towardTarget = calibration.orientation === 'end-on'
+      ? (gs.shootingTeam === 'A' ? dy < 0 : dy > 0)
+      : (gs.shootingTeam === 'A' ? dx > 0 : dx < 0);
+  }
+  if (disp >= minDisp && towardTarget) {
+    awaitingShot = true;
+    if (throwCbs.onThrowEnd) throwCbs.onThrowEnd();
+  }
 }
 
 function triggerCupCheck() {
@@ -690,7 +746,14 @@ function triggerCupCheck() {
     activeCupIds
   );
 
-  if (make && throwCbs.onMakeDetected) throwCbs.onMakeDetected(make);
+  if (make) {
+    awaitingShot = false;
+    if (throwCbs.onMakeDetected) throwCbs.onMakeDetected(make);
+  } else if (awaitingShot) {
+    // Ball vanished away from every live cup — resolve the shot as a miss
+    awaitingShot = false;
+    if (throwCbs.onMissDetected) throwCbs.onMissDetected({ reason: 'no-cup' });
+  }
 }
 
 /* ── Main Render + CV Loop ── */
@@ -993,8 +1056,11 @@ window.Vision = {
         video: { width:{ideal:1280}, height:{ideal:720}, facingMode: facingMode||'user' }
       });
       video.srcObject = stream;
-      await new Promise(r => { video.onloadedmetadata = r; });
-      video.play();
+      await new Promise(r => {
+        if (video.readyState >= 1) return r();
+        video.onloadedmetadata = () => r();
+      });
+      await video.play().catch(() => {});
       canvas.width = video.videoWidth || 640;
       canvas.height = video.videoHeight || 480;
       return true;
@@ -1132,6 +1198,7 @@ window.Vision = {
     ballPositions = []; throwBuffer = []; throwActive = false;
     postThrowBuffer = null; lastArcPoints = [];
     ballDisappearFrames = 0; lastBallSeenAt = 0; lastBallPos = null;
+    awaitingShot = false; throwSlowFrames = 0;
     initPose();
     if (animId) cancelAnimationFrame(animId);
     animId = requestAnimationFrame(trackLoop);
@@ -1139,6 +1206,7 @@ window.Vision = {
 
   stopTracking() {
     trackingActive = false;
+    awaitingShot = false;
     if (animId) { cancelAnimationFrame(animId); animId = null; }
   },
 
@@ -1169,7 +1237,6 @@ window.Vision = {
   set ballHSV(v) { ballHSV = v; },
 
   get calibration() { return calibration; },
-  get cupLayout() { return cupLayout; },
   get poseConfidence() { return poseConfidence; },
   get lastSpeed() { return lastSpeed; },
   get throwActive() { return throwActive; },

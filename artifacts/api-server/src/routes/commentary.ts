@@ -20,7 +20,7 @@ router.post("/commentary", async (req, res) => {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
         max_tokens: 60,
         system:
           "You are an over-the-top, hilarious sports commentator for a beer pong game. Respond with ONE short punchy line of commentary, max 20 words, no preamble, no quotes.",

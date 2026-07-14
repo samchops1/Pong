@@ -1,6 +1,6 @@
-# [Project name]
+# Pong Ref
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+AI-powered beer pong referee: point a phone/webcam at the table and it tracks the ball, auto-detects made cups, calls elbow fouls, measures throw speed, and provides live commentary.
 
 ## Run & Operate
 
@@ -22,15 +22,29 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/api-server/public/` — the entire frontend (vanilla JS, no build step):
+  - `app.js` — game controller: setup, calibration flow, scoring, turns, rebuttal/chandeliers, persistence
+  - `vision.js` — CV engine (`window.Vision`): HSV ball tracking, throw state machine, cup make detection, elbow foul via MediaPipe Pose
+  - `hands.js` — `window.HandGesture`: 4-finger island-call gesture via MediaPipe Hands (calls `window.onIslandGesture`)
+  - `commentary.js` — `window.Commentary`: queued TTS + bubble; falls back to canned lines when `/api/commentary` returns null
+- `artifacts/api-server/src/routes/commentary.ts` — Anthropic-backed commentary endpoint (returns `{text:null}` without `ANTHROPIC_API_KEY`; client falls back to canned lines)
+- `.agents/memory/` — deep notes on the CV coordinate system and ball-tracking tuning; read before touching vision.js
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- All CV runs client-side on canvas pixels; the server only serves static files and generates commentary. No DB usage yet despite the scaffolding.
+- Ball detection is pure HSV color matching against a user-sampled color — fragile by design; the in-game "Tracking ball / No ball" badge is the primary diagnostic.
+- Gameplay is fully automatic: vision resolves every qualifying throw as a make (auto-score) or a miss (auto turn advance) — via cup disappearance, bounce-out, ball-at-rest, next-throw-start, or a 6s backstop timer. A throw only qualifies if it traveled ≥ ~1.2 ft toward the defending rack (so handling the ball never burns a turn). Low-confidence makes prompt briefly, then auto-count as a miss after 8s.
+- Duplicate video frames (camera fps < rAF fps) are deduped before throw analysis — a zero-velocity repeat sample must never be treated as a reversal/stop.
+- Every auto-detection still has a manual override: Pass Turn button, tap-a-cup toggle with confirm, rebuttal Made It/Miss buttons, click-to-place cups, undo on makes.
+- Game state persists to localStorage (`pongref_v5`) after every event; calibration (corners, ball HSV, cup layout) is saved alongside so resume skips recalibration.
+- MediaPipe Pose/Hands load from CDN and degrade gracefully (foul/gesture detection disabled) when unavailable.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Setup: 1v1 or 2v2, 6 or 10 cups, table length, house rules (balls back, strict foul).
+- Calibration: click 4 table corners → auto-detect red Solo cups (or drag/click to place) → sample ball color with live mask preview.
+- Game: auto make detection with confidence prompt, throw-speed mph overlay, elbow-foul detection with confirm, fire streaks, island calls (button or hand gesture), behind-the-back bonus, balls back, rebuttal, chandeliers overtime, event log with undo, AI commentary with TTS, win screen with shareable stat card and game history.
 
 ## User preferences
 

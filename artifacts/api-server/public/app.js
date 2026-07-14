@@ -35,6 +35,10 @@ let cupClickPlaced = { teamA: [], teamB: [] };
 let cupClickTeam = 'teamA';
 let cupClickRadius = 25;
 let confettiRaf = null;
+let shotBackstopTimer = null;  // resolves a throw as a miss if vision never does
+let uncertainOpen = false;     // low-confidence make prompt is on screen
+const SHOT_BACKSTOP_MS = 6000;
+const UNCERTAIN_AUTO_MS = 8000;
 const SAVE_KEY = 'pongref_v5';
 const HISTORY_KEY = 'pongref_history_v1';
 
@@ -128,6 +132,7 @@ function initSetupScreen() {
   });
 
   document.getElementById('btn-start-calibration').addEventListener('click', () => {
+    state = null; // starting from setup is always a brand-new game
     const mode = document.querySelector('.mode-btn.active')?.dataset.mode || '1v1';
     const cupCount = parseInt(document.querySelector('.cup-btn.active')?.dataset.cups || '10');
     const tableFt = parseFloat(document.getElementById('table-length').value) || 8;
@@ -154,12 +159,14 @@ function initSetupScreen() {
         if (cv.hsvTol) Vision.setHsvTol(cv.hsvTol);
         if (cv.cupAdjust) Vision.setCupAdjust(cv.cupAdjust);
         if (cv.clickedLayout) Vision.setCupLayoutDirect(cv.clickedLayout);
-        window._cfg = window._cfg || {
-          tableFt: state.tableFt, cupCount: state.cupCount,
-          mode: state.mode, ballsBack: state.ballsBack, strictFoul: state.strictFoul,
-          players: state.players
-        };
       }
+      // Rebuild _cfg from the resumed game even when no CV state was saved,
+      // so a later recalibration doesn't crash on a missing config.
+      window._cfg = window._cfg || {
+        tableFt: state.tableFt, cupCount: state.cupCount,
+        mode: state.mode, ballsBack: state.ballsBack, strictFoul: state.strictFoul,
+        players: state.players
+      };
       document.getElementById('resume-modal').classList.add('hidden');
       startGame();
     };
@@ -508,6 +515,8 @@ async function startBallCal() {
   ballSampled = false; pendingMask = false;
   showScreen('screen-calibrate-ball');
   document.getElementById('btn-start-game').disabled = true;
+  document.getElementById('btn-start-game').textContent =
+    state ? 'Resume Game →' : 'Start Game →';
   const infoEl = document.getElementById('hsv-info');
   infoEl.textContent = ''; infoEl.classList.remove('warn');
   document.getElementById('ball-sample-dot').classList.add('hidden');
@@ -571,7 +580,9 @@ async function startBallCal() {
   document.getElementById('btn-start-game').onclick = () => {
     ballPreviewActive = false;
     Vision.stopCamera();
-    state = freshState(window._cfg);
+    // Recalibrating mid-game must NOT wipe the score — only build a fresh
+    // state when no game is in progress.
+    if (!state) state = freshState(window._cfg);
     startGame();
   };
 }
@@ -629,6 +640,23 @@ function onBallClick(e) {
 async function startGame() {
   showScreen('screen-game');
 
+  // Reset fixed overlays that may linger from a previous game
+  const chanBanner = document.getElementById('chandeliers-banner');
+  if (chanBanner) chanBanner.classList.toggle('hidden', !state.isChandeliers);
+  const islandBanner = document.getElementById('island-banner');
+  if (islandBanner) islandBanner.classList.add('hidden');
+  const btbBtn = document.getElementById('btb-btn');
+  if (btbBtn) btbBtn.classList.add('hidden');
+  const foulBar = document.getElementById('foul-confirm-bar');
+  if (foulBar) foulBar.classList.add('hidden');
+  const rebOverlay = document.getElementById('rebuttal-overlay');
+  if (rebOverlay) rebOverlay.classList.toggle('hidden', !state.isRebuttal);
+  if (state.isRebuttal) updateRebuttalUI();
+  clearShotBackstop();
+  uncertainOpen = false;
+  const uncToast = document.getElementById('uncertain-toast');
+  if (uncToast) uncToast.classList.add('hidden');
+
   updateTeamPanels();
   renderRacks();
   renderEventLog();
@@ -647,7 +675,7 @@ async function startGame() {
     );
     Vision.setCupLayout(state.cupCount);
     Vision.startTracking({
-      onThrowStart, onSpeed, onMakeDetected, onFoulDetected
+      onThrowStart, onThrowEnd, onSpeed, onMakeDetected, onMissDetected, onFoulDetected
     }, getGameState);
     HandGesture.start(video); // Island call: 4-finger palm-toward-camera gesture
   }
@@ -694,6 +722,11 @@ function wireGameButtons() {
   const passBtn = document.getElementById('btn-pass-turn');
   if (passBtn) passBtn.onclick = () => afterShotHappened(false);
 
+  const rebMissBtn = document.getElementById('btn-rebuttal-miss');
+  if (rebMissBtn) rebMissBtn.onclick = () => afterShotHappened(false);
+  const rebMakeBtn = document.getElementById('btn-rebuttal-make');
+  if (rebMakeBtn) rebMakeBtn.onclick = scoreRebuttalMake;
+
   const dismissIsland = document.getElementById('btn-dismiss-island');
   if (dismissIsland) dismissIsland.onclick = () => {
     const b = document.getElementById('island-banner');
@@ -705,6 +738,33 @@ function wireGameButtons() {
 function onThrowStart() {
   const overlay = document.getElementById('speed-overlay');
   if (overlay) overlay.style.display = 'none';
+}
+
+/* A qualifying throw ended: arm a backstop so the shot ALWAYS resolves even if
+   vision loses the ball entirely — no manual click required to advance play. */
+function onThrowEnd() {
+  clearTimeout(shotBackstopTimer);
+  shotBackstopTimer = setTimeout(() => {
+    shotBackstopTimer = null;
+    if (!state || uncertainOpen) return;
+    autoMiss('unresolved');
+  }, SHOT_BACKSTOP_MS);
+}
+
+function onMissDetected() {
+  if (!state || uncertainOpen) return;
+  autoMiss('vision');
+}
+
+function autoMiss() {
+  clearShotBackstop();
+  addEvent(`✗ ${shooterName()} — miss`, 'miss');
+  afterShotHappened(false);
+}
+
+function clearShotBackstop() {
+  clearTimeout(shotBackstopTimer);
+  shotBackstopTimer = null;
 }
 
 function onSpeed(mph) {
@@ -775,6 +835,7 @@ function autoScoreCup(teamKey, cupId) {
   }
   if (state.isChandeliers && cupId === 4) state.chandeliersTopMade[teamKey] = true;
 
+  clearShotBackstop(); // shot is resolving as a make — cancel the miss backstop
   const shooter = shooterName();
   ensureStats(shooter);
   cup.made = true;
@@ -850,6 +911,7 @@ function autoScoreCup(teamKey, cupId) {
 
 /* ── Same-cup bonus ── */
 function triggerSameCupBonus(teamKey) {
+  clearShotBackstop();
   const shooter = shooterName();
   ensureStats(shooter);
 
@@ -906,15 +968,8 @@ function startRebuttal(attacker, defender, teamKey) {
 
   const shots = state.rebuttalShotsLeft;
   const overlay = document.getElementById('rebuttal-overlay');
-  if (overlay) {
-    overlay.classList.remove('hidden');
-    const shooterEl = document.getElementById('rebuttal-shooter');
-    if (shooterEl) shooterEl.textContent = `${state.players[defender][0]} — shoot now!`;
-    const shotsEl = document.getElementById('rebuttal-shots-left');
-    if (shotsEl) shotsEl.textContent = `${shots} shot${shots!==1?'s':''} left`;
-    const missBtn = document.getElementById('btn-rebuttal-miss');
-    if (missBtn) missBtn.onclick = () => afterShotHappened(false);
-  }
+  if (overlay) overlay.classList.remove('hidden');
+  updateRebuttalUI();
 
   addEvent(`⚡ REBUTTAL! ${teamDisplayName(defender)} gets ${shots} shot${shots!==1?'s':''}!`, 'rebuttal');
   Commentary.fire('rebuttal', { team: teamDisplayName(defender), player: state.players[defender][0] });
@@ -938,15 +993,35 @@ function handleRebuttalShot(wasMake) {
 
   if (state.rebuttalShotsLeft > 0 && state.mode==='2v2') {
     state.shooterIndex[defender] = 1;
-    const shooterEl = document.getElementById('rebuttal-shooter');
-    if (shooterEl) shooterEl.textContent = `${state.players[defender][1]||'P2'} — shoot now!`;
-    const shotsEl = document.getElementById('rebuttal-shots-left');
-    if (shotsEl) shotsEl.textContent = `1 shot left`;
+    updateRebuttalUI();
     updateTurnIndicator(); saveState();
     return;
   }
 
   endRebuttal();
+}
+
+function updateRebuttalUI() {
+  const defender = state.rebuttalTeam;
+  if (!defender) return;
+  const idx = state.mode==='2v2' ? state.shooterIndex[defender] : 0;
+  const shooterEl = document.getElementById('rebuttal-shooter');
+  if (shooterEl) shooterEl.textContent = `${state.players[defender][idx]||'P'+(idx+1)} — shoot now!`;
+  const shots = state.rebuttalShotsLeft;
+  const shotsEl = document.getElementById('rebuttal-shots-left');
+  if (shotsEl) shotsEl.textContent = `${shots} shot${shots!==1?'s':''} left`;
+}
+
+/* Manual fallback for a rebuttal make when auto-detection misses it: score the
+   first open cup on the attacker's rack, which routes through autoScoreCup →
+   afterShotHappened → handleRebuttalShot exactly like a vision-detected make. */
+function scoreRebuttalMake() {
+  if (!state || !state.isRebuttal) return;
+  const attacker = state.rebuttalTeam==='A' ? 'B' : 'A';
+  const attackerKey = attacker==='A' ? 'teamA' : 'teamB';
+  const target = (state.cups[attackerKey]||[]).find(c=>!c.made);
+  if (!target) { afterShotHappened(true); return; }
+  autoScoreCup(attackerKey, target.id);
 }
 
 function endRebuttal() {
@@ -969,6 +1044,10 @@ function endRebuttal() {
     let restored = 0;
     for (let i = defCups.length-1; i >= 0 && restored < made; i--) {
       if (defCups[i].made) {
+        const maker = defCups[i].madeBy;
+        if (maker && state.playerStats[maker]) {
+          state.playerStats[maker].made = Math.max(0, state.playerStats[maker].made-1);
+        }
         defCups[i].made = false;
         defCups[i].madeBy = null;
         restored++;
@@ -1057,6 +1136,7 @@ function findLoneCupId(teamKey) {
 /* ── Central shot handler ── */
 function afterShotHappened(wasMake) {
   if (!state) return;
+  clearShotBackstop();
 
   // Route rebuttal shots separately
   if (state.isRebuttal) { handleRebuttalShot(wasMake); return; }
@@ -1126,8 +1206,9 @@ function advanceTurn(source) {
     updateTurnIndicator(); updateTeamPanels(); saveState(); return;
   }
 
-  // Miss streak commentary
-  gs.consecutiveMisses[outgoingT]++;
+  // Miss streak commentary — a turn with any make is not a miss
+  if (gs.makesThisTurn > 0) gs.consecutiveMisses[outgoingT] = 0;
+  else gs.consecutiveMisses[outgoingT]++;
   if (gs.consecutiveMisses[outgoingT] >= 3) {
     Commentary.fire('miss_streak', { player:shooterName(), defending:`Team ${outgoingT==='A'?'B':'A'}`, missStreak:true });
   }
@@ -1302,6 +1383,9 @@ function onIslandGesture() {
   renderRacks(); saveState();
 }
 
+// hands.js invokes this via window when the 4-finger island gesture is held
+window.onIslandGesture = onIslandGesture;
+
 function showGestureToast(msg) {
   let toast = document.getElementById('gesture-toast');
   if (!toast) {
@@ -1318,6 +1402,8 @@ function showGestureToast(msg) {
 
 /* ── Uncertain prompt ── */
 function showUncertainPrompt(teamKey, cupId) {
+  clearShotBackstop();
+  uncertainOpen = true;
   const teamLetter = teamKey==='teamA'?'A':'B';
   const toast = document.getElementById('uncertain-toast');
   toast.innerHTML = `❓ Cup ${cupId} (Team ${teamLetter}) — did it go in?
@@ -1325,12 +1411,23 @@ function showUncertainPrompt(teamKey, cupId) {
     <button id="unc-no">Miss ✗</button>`;
   toast.classList.remove('hidden');
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => toast.classList.add('hidden'), 15000);
+  // Fully automated flow: with no confirmation the shot counts as a miss and
+  // play advances on its own (a wrong call is fixable by tapping the cup).
+  toast._t = setTimeout(() => {
+    toast.classList.add('hidden');
+    uncertainOpen = false;
+    addEvent(`✗ Cup ${cupId} unconfirmed — counted as miss`, 'miss');
+    afterShotHappened(false);
+  }, UNCERTAIN_AUTO_MS);
   document.getElementById('unc-yes').onclick = () => {
+    clearTimeout(toast._t);
+    uncertainOpen = false;
     autoScoreCup(teamKey, cupId);
     toast.classList.add('hidden');
   };
   document.getElementById('unc-no').onclick = () => {
+    clearTimeout(toast._t);
+    uncertainOpen = false;
     toast.classList.add('hidden');
     afterShotHappened(false);
   };
@@ -1520,6 +1617,12 @@ function openToggleModal(teamKey, cupId) {
     } else {
       cup.madeBy = shooter; ensureStats(shooter); state.playerStats[shooter].made++;
       addEvent(`✋ Cup ${cupId} (${teamLetter}) manually marked`, 'manual');
+      const remaining = (state.cups[teamKey]||[]).filter(c=>!c.made).length;
+      Commentary.fire('make', {
+        player: shooter, defending: `Team ${teamLetter}`, cupId,
+        lastCup: remaining===0, oneCupLeft: remaining===1,
+        twoCupsLeft: remaining===2, threeCupsLeft: remaining===3
+      });
     }
     updateCupCount(); renderRacks(); updateTeamPanels(); saveState();
     if (!wasMade) checkWinCondition(teamKey);
@@ -1689,6 +1792,11 @@ async function shareStats(winner, loser) {
 
 function showWinScreen(winner, loser) {
   HandGesture.stop();
+  // Hide fixed overlays that would otherwise float above the win screen
+  for (const id of ['chandeliers-banner','island-banner','btb-btn','foul-confirm-bar']) {
+    const el = document.getElementById(id);
+    if (el) el.classList.add('hidden');
+  }
   showScreen('screen-win');
   const winnerName = teamDisplayName(winner);
   document.getElementById('win-title').textContent = winnerName + ' Wins! 🎉';
